@@ -28,10 +28,12 @@ jobs:
           # Get versions from files
           MANIFEST_VERSION=$(jq -r '.version' resources/manifest.json)
           PACKAGE_VERSION=$(jq -r '.version' package.json)
+          UPDATES_LAST_VERSION=$(jq -r '.addons["pg4tb@e4a.org"].updates[-1].version' resources/updates.json)
 
           echo "Tag version: $TAG_VERSION"
           echo "Manifest version: $MANIFEST_VERSION"
           echo "Package.json version: $PACKAGE_VERSION"
+          echo "Last version in updates.json: $UPDATES_LAST_VERSION"
 
           # Check if all versions match
           if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
@@ -41,6 +43,12 @@ jobs:
 
           if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
             echo "❌ Error: Tag version ($TAG_VERSION) does not match package.json version ($PACKAGE_VERSION)"
+            exit 1
+          fi
+
+          if [ "$TAG_VERSION" != "$UPDATES_LAST_VERSION" ]; then
+            echo "❌ Error: Tag version ($TAG_VERSION) does not match last version in updates.json ($UPDATES_LAST_VERSION)"
+            echo "Make sure you've added version $TAG_VERSION as the last entry in resources/updates.json"
             exit 1
           fi
 
