@@ -47,13 +47,14 @@ jobs:
           # Read existing updates.json from dist
           UPDATES_JSON="dist/updates.json"
 
-          # Create new version entry with GitHub release URL
-          NEW_ENTRY=$(jq -n \
+          # Update updates.json with GitHub release URL
+          jq \
             --arg version "$VERSION" \
             --arg url "https://github.com/${{ github.repository }}/releases/download/v$VERSION/postguard-tb-addon-$VERSION.xpi" \
             --arg min "$STRICT_MIN" \
             --arg max "$STRICT_MAX" \
-            '{
+            '
+            .addons["pg4tb@e4a.org"].updates += [{
               version: $version,
               update_link: $url,
               applications: {
@@ -62,13 +63,9 @@ jobs:
                   strict_max_version: $max
                 }
               }
-            }')
-
-          # Add new entry to updates array (or replace if version exists)
-          jq --argjson new_entry "$NEW_ENTRY" \
-            '.addons["pg4tb@e4a.org"].updates |=
-              map(select(.version != $new_entry.version)) + [$new_entry] |
-              sort_by(.version)' \
+            }] |
+            .addons["pg4tb@e4a.org"].updates |= unique_by(.version)
+            ' \
             "$UPDATES_JSON" > "${UPDATES_JSON}.tmp"
 
           mv "${UPDATES_JSON}.tmp" "$UPDATES_JSON"
