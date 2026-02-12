@@ -42,7 +42,9 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 export async function getLocalFolder(folderName: string): Promise<any> {
     const accs = await browser.accounts.list()
     for (const acc of accs) {
-        if (acc.name === 'Local Folders') {
+        // if type is non, it is considered a local folder
+        // Docs: https://webextension-api.thunderbird.net/en/latest/accounts.html#accounts-mailaccount
+        if (acc.type === 'none') {
             for (const f of acc.folders) {
                 if (f.name === folderName) return f
             }
@@ -62,4 +64,39 @@ export async function isPGEncrypted(msgId: number): Promise<boolean> {
 export async function wasPGEncrypted(msgId: number): Promise<boolean> {
     const full = await browser.messages.getFull(msgId)
     return 'x-postguard' in full.headers
+}
+
+// If hours <  4: seconds till 4 AM today.
+// If hours >= 4: seconds till 4 AM tomorrow.
+export function secondsTill4AM(): number {
+    const now = Date.now()
+    const nextMidnight = new Date(now).setHours(24, 0, 0, 0)
+    const secondsTillMidnight = Math.round((nextMidnight - now) / 1000)
+    const secondsTill4AM = secondsTillMidnight + 4 * 60 * 60
+    return secondsTill4AM % (24 * 60 * 60)
+}
+
+export function type_to_image(t: string): string {
+    let type: string
+    switch (t) {
+        case 'pbdf.sidn-pbdf.email.email':
+            type = 'envelope'
+            break
+        case 'pbdf.sidn-pbdf.mobilenumber.mobilenumber':
+            type = 'phone'
+            break
+        case 'pbdf.pbdf.surfnet-2.id':
+            type = 'education'
+            break
+        case 'pbdf.nuts.agb.agbcode':
+            type = 'health'
+            break
+        case 'pbdf.gemeente.personalData.dateofbirth':
+            type = 'calendar'
+            break
+        default:
+            type = 'personal'
+            break
+    }
+    return type
 }

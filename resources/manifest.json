@@ -1,7 +1,7 @@
 {
     "manifest_version": 2,
     "name": "PostGuard (beta)",
-    "version": "0.7.2",
+    "version": "0.7.9",
     "description": "PostGuard encryption plugin for Thunderbird",
     "icons": {
         "48": "icons/pg_logo_no_text.svg",
@@ -10,7 +10,7 @@
     "browser_specific_settings": {
         "gecko": {
             "id": "pg4tb@e4a.org",
-            "strict_max_version": "108.*",
+            "strict_max_version": "118.*",
             "update_url": "https://postguard.eu/downloads/updates.json"
         }
     },
@@ -51,6 +51,7 @@
         "messagesDelete",
         "accountsFolders",
         "accountsRead",
+        "messagesImport",
         "activeTab",
         "compose",
         "storage"
