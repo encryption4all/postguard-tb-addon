@@ -38,11 +38,51 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "artifact_name=postguard-tb-addon-$VERSION.xpi" >> $GITHUB_OUTPUT
 
-      - name: Upload artifact
+      - name: Update updates.json with GitHub release URL
+        run: |
+          VERSION=$(jq -r '.version' resources/manifest.json)
+          STRICT_MIN=$(jq -r '.browser_specific_settings.gecko.strict_min_version // "102.0"' resources/manifest.json)
+          STRICT_MAX=$(jq -r '.browser_specific_settings.gecko.strict_max_version' resources/manifest.json)
+
+          # Read existing updates.json from dist
+          UPDATES_JSON="dist/updates.json"
+
+          # Create new version entry with GitHub release URL
+          NEW_ENTRY=$(jq -n \
+            --arg version "$VERSION" \
+            --arg url "https://github.com/${{ github.repository }}/releases/download/v$VERSION/postguard-tb-addon-$VERSION.xpi" \
+            --arg min "$STRICT_MIN" \
+            --arg max "$STRICT_MAX" \
+            '{
+              version: $version,
+              update_link: $url,
+              applications: {
+                gecko: {
+                  strict_min_version: $min,
+                  strict_max_version: $max
+                }
+              }
+            }')
+
+          # Add new entry to updates array (or replace if version exists)
+          jq --argjson new_entry "$NEW_ENTRY" \
+            '.addons["pg4tb@e4a.org"].updates |=
+              map(select(.version != $new_entry.version)) + [$new_entry] |
+              sort_by(.version)' \
+            "$UPDATES_JSON" > "${UPDATES_JSON}.tmp"
+
+          mv "${UPDATES_JSON}.tmp" "$UPDATES_JSON"
+
+          echo "Updated updates.json with version $VERSION"
+          cat "$UPDATES_JSON"
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: postguard-tb-addon-${{ steps.version.outputs.version }}
-          path: dist/postguard-tb-addon-${{ steps.version.outputs.version }}.xpi
+          path: |
+            dist/postguard-tb-addon-${{ steps.version.outputs.version }}.xpi
+            dist/updates.json
           retention-days: 90
 
   release:
@@ -72,7 +112,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: postguard-tb-addon-${{ steps.version.outputs.version }}.xpi
+          files: |
+            postguard-tb-addon-${{ steps.version.outputs.version }}.xpi
+            updates.json
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
