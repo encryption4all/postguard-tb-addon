@@ -35,20 +35,50 @@ jobs:
           echo "Package.json version: $PACKAGE_VERSION"
           echo "Last version in updates.json: $UPDATES_LAST_VERSION"
 
+          # Function to print fix instructions
+          print_fix_instructions() {
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📋 To fix this issue, run these commands:"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "1. Delete the tag locally and remotely:"
+            echo "   git tag -d v${TAG_VERSION} && git push origin :refs/tags/v${TAG_VERSION}"
+            echo ""
+            echo "2. Update version to ${TAG_VERSION} in these files:"
+            echo "   - resources/manifest.json (currently: ${MANIFEST_VERSION})"
+            echo "   - package.json (currently: ${PACKAGE_VERSION})"
+            echo "   - resources/updates.json - add as last entry (currently: ${UPDATES_LAST_VERSION})"
+            echo ""
+            echo "3. Commit the changes:"
+            echo "   git add resources/manifest.json package.json resources/updates.json"
+            echo "   git commit -m \"Bump version to ${TAG_VERSION}\""
+            echo "   git push origin main"
+            echo ""
+            echo "4. Create and push the tag again:"
+            echo "   git tag v${TAG_VERSION}"
+            echo "   git push origin v${TAG_VERSION}"
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          }
+
           # Check if all versions match
           if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
             echo "❌ Error: Tag version ($TAG_VERSION) does not match manifest.json version ($MANIFEST_VERSION)"
+            print_fix_instructions
             exit 1
           fi
 
           if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
             echo "❌ Error: Tag version ($TAG_VERSION) does not match package.json version ($PACKAGE_VERSION)"
+            print_fix_instructions
             exit 1
           fi
 
           if [ "$TAG_VERSION" != "$UPDATES_LAST_VERSION" ]; then
             echo "❌ Error: Tag version ($TAG_VERSION) does not match last version in updates.json ($UPDATES_LAST_VERSION)"
             echo "Make sure you've added version $TAG_VERSION as the last entry in resources/updates.json"
+            print_fix_instructions
             exit 1
           fi
 
