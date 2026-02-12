@@ -44,7 +44,7 @@ yarn build
 Postguard's [cryptographic
 core](https://github.com/encryption4all/irmaseal/tree/main/irmaseal-core) is
 implemented in Rust, which is compiled down to WebAssembly in
-[irmaseal-wasm-bindings](https://github.com/encryption4all/irmaseal/tree/main/irmaseal-wasm-bindings)
+[postguard-wasm](https://github.com/encryption4all/postguard/tree/main/pg-wasm)
 using `wasm-pack`. For this purpose, we require a `script-source 'unsafe-eval'`
 directive in the Content Security Policy (CSP). Hopefully, this can soon be
 replaced with `unsafe-wasm-eval` in a newer version of Firefox/Thunderbird.
