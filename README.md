@@ -6,9 +6,9 @@ management.
 
 Anyone can encrypt without prior setup using this system. For decryption, a
 user requests a decryption key from trusted third party. To do so, the user
-must authenticate using [IRMA](https://irma.app/), a privacy-friendly
+must authenticate using [Yivi](https://yivi.app/), a privacy-friendly
 decentralized identity platform based on the Idemix protocol. Any combination of
-attributes in the IRMA ecosystem can be used to encrypt e-mails, which allows for
+attributes in the Yivi ecosystem can be used to encrypt e-mails, which allows for
 detailed access control over the e-mail's content.
 
 Examples include:
@@ -20,7 +20,7 @@ Examples include:
 -   Or any combination of the previous examples.
 
 For more information, see [our website](https://postguard.eu/) and [our Github
-organisation](https://github.com/encryption4all/irmaseal).
+organisation](https://github.com/encryption4all/postguard).
 
 ## Prerequisites
 
@@ -44,7 +44,7 @@ yarn build
 Postguard's [cryptographic
 core](https://github.com/encryption4all/irmaseal/tree/main/irmaseal-core) is
 implemented in Rust, which is compiled down to WebAssembly in
-[irmaseal-wasm-bindings](https://github.com/encryption4all/irmaseal/tree/main/irmaseal-wasm-bindings)
+[postguard-wasm](https://github.com/encryption4all/postguard/tree/main/pg-wasm)
 using `wasm-pack`. For this purpose, we require a `script-source 'unsafe-eval'`
 directive in the Content Security Policy (CSP). Hopefully, this can soon be
 replaced with `unsafe-wasm-eval` in a newer version of Firefox/Thunderbird.

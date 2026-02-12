@@ -1,3 +1,4 @@
 dist/
 node_modules/
 .tscache/
+package-lock.json
