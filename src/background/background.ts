@@ -67,7 +67,7 @@ const [pk, vk, mod] = await Promise.all([pk_promise, vk_promise, mod_promise])
 // Also, add a bar to any existing compose windows.
 const composeTabs: {
     [tabId: number]: {
-        tab: any
+        tab: object
         encrypt: boolean
         barId: number
         notificationId?: number
@@ -76,7 +76,7 @@ const composeTabs: {
         signId?: Policy
         signWindowId?: number
         newMsgId?: number
-        details?: any
+        details?: object
     }
 } = {}
 
@@ -601,13 +601,13 @@ async function decryptMessage(msgId: number) {
 
             if (VERSION.major < 106) await browser.messageDisplay.open({ messageId: movedMsgId })
             else await browser.mailTabs.setSelectedMessages([movedMsgId])
-        } catch (e: any) {
+        } catch (e: unknown) {
             e instanceof Error && console.log('switching to message failed: ', e.message)
         }
 
         await browser.messages.delete([msg.id], true)
-    } catch (e: any) {
-        console.log('error during decryption: ', e.message, e.name)
+    } catch (e: unknown) {
+        if (e instanceof Error) console.log('error during decryption: ', e.message, e.name)
         if (e instanceof Error && e.name === 'OperationError')
             await notifyDecryptionFailed(i18n('decryptionFailed'))
         if (e instanceof Error && e.name === 'RecipientUnknownError')
@@ -746,7 +746,7 @@ async function storeLocalStorage(con: AttributeCon, jwt: string) {
 }
 
 // Retrieve a USK using a JWT and timestamp.
-async function getUSK(jwt: string, ts: number): Promise<any> {
+async function getUSK(jwt: string, ts: number): Promise<unknown> {
     const url = `${PKG_URL}/v2/irma/key/${ts?.toString()}`
     return fetch(url, {
         headers: {
@@ -762,7 +762,7 @@ async function getUSK(jwt: string, ts: number): Promise<any> {
         })
 }
 
-async function getSigningKeys(jwt: string, keyRequest?: any): Promise<any> {
+async function getSigningKeys(jwt: string, keyRequest?: object): Promise<{ pubSignKey: ISigningKey; privSignKey?: ISigningKey }> {
     const url = `${PKG_URL}/v2/irma/sign/key`
     return fetch(url, {
         method: 'POST',

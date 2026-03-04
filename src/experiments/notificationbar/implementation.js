@@ -1,10 +1,9 @@
 /*eslint no-fallthrough: ["error", { "commentPattern": "break[\\s\\w]*omitted" }]*/
-/* global ExtensionCommon,  ChromeUtils, ExtensionUtils */
+/* global ExtensionCommon, ChromeUtils */
 
 'use strict'
 
 var { EventEmitter, EventManager, ExtensionAPI } = ExtensionCommon
-var { ExtensionError } = ExtensionUtils
 var { Services } = ChromeUtils.import('resource://gre/modules/Services.jsm')
 
 class ExtensionNotification {
@@ -351,6 +350,7 @@ class ExtensionNotification {
     }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 var notificationbar = class extends ExtensionAPI {
     constructor(extension) {
         super(extension)
@@ -369,7 +369,7 @@ var notificationbar = class extends ExtensionAPI {
 
     // Observer for the domwindowclosed notification, to remove
     // obsolete notifications from the notificationsMap.
-    observe(aSubject, aTopic, aData) {
+    observe(aSubject, _aTopic, _aData) {
         let win = this.context.extension.windowManager.convert(aSubject)
         this.notificationsMap.forEach((value, key) => {
             if (value.properties.windowId == win.id) {

@@ -2,9 +2,8 @@
  * PostGuard thunderbird experiment.
  */
 
-/* global Components: false */
-
 declare const Components
+declare const ExtensionError: new (msg: string) => Error
 const { classes: Cc, interfaces: Ci, utils: Cu } = Components
 
 const { ExtensionCommon } = Cu.import('resource://gre/modules/ExtensionCommon.jsm')
@@ -15,7 +14,7 @@ const { MailServices } = Cu.import('resource:///modules/MailServices.jsm')
 
 const extension = ExtensionParent.GlobalManager.getExtension('pg4tb@e4a.org')
 
-function folderPathToURI(accountId: number, path: string): string {
+function folderPathToURI(accountId: string, path: string): string {
     const server = MailServices.accounts.getAccount(accountId).incomingServer
     const rootURI = server.rootFolder.URI
     if (path == '/') {
@@ -83,14 +82,14 @@ export default class pg4tb extends ExtensionCommon.ExtensionAPI {
                 },
                 copyFileMessage: async function (
                     fileId: number,
-                    folder?: any,
+                    folder?: { accountId: string; path: string },
                     originalMsgId?: number
                 ): Promise<number> {
                     const { file, stream } = files.get(fileId)
                     if (!file || !stream) throw new ExtensionError('file not found')
                     stream.close()
 
-                    let destinationFolder: any
+                    let destinationFolder!: { URI: string }
                     if (folder) {
                         const uri = folderPathToURI(folder.accountId, folder.path)
                         destinationFolder = MailUtils.getExistingFolder(uri)
@@ -115,7 +114,7 @@ export default class pg4tb extends ExtensionCommon.ExtensionAPI {
                                         finish(msgHdrs.get(newKey))
                                     }
                                 },
-                                onFolderAdded(parent, child) {},
+                                onFolderAdded(_parent, _child) { /* required by interface */ },
                             }
 
                             MailServices.mailSession.AddFolderListener(
@@ -139,9 +138,9 @@ export default class pg4tb extends ExtensionCommon.ExtensionAPI {
                             }
 
                             const copyListener = {
-                                GetMessageId(messageId) {},
-                                OnProgress(progress, progressMax) {},
-                                OnStartCopy() {},
+                                GetMessageId(_messageId) { /* required by interface */ },
+                                OnProgress(_progress, _progressMax) { /* required by interface */ },
+                                OnStartCopy() { /* required by interface */ },
                                 SetMessageKey(aKey) {
                                     newKey = aKey
                                     if (msgHdrs.has(newKey)) {
@@ -187,7 +186,7 @@ export default class pg4tb extends ExtensionCommon.ExtensionAPI {
 
                         return newMsgId
                     } catch (ex) {
-                        throw ExtensionError(
+                        throw new ExtensionError(
                             `error during creation of new message from file: ${
                                 (ex as Error).message
                             }`

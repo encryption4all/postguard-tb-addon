@@ -39,7 +39,7 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     return Promise.race([p, timeout])
 }
 
-export async function getLocalFolder(folderName: string): Promise<any> {
+export async function getLocalFolder(folderName: string) {
     const accs = await browser.accounts.list()
     for (const acc of accs) {
         // if type is non, it is considered a local folder

@@ -377,6 +377,7 @@ class SwitchBar {
     }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 var switchbar = class extends ExtensionAPI {
     constructor(extension) {
         super(extension)
@@ -395,7 +396,7 @@ var switchbar = class extends ExtensionAPI {
 
     // Observer for the domwindowclosed notification, to remove
     // obsolete notifications from the notificationsMap.
-    observe(aSubject, aTopic, aData) {
+    observe(aSubject, _aTopic, _aData) {
         const win = this.context.extension.windowManager.convert(aSubject)
         this.notificationsMap.forEach((value, key) => {
             if (value.properties.windowId == win.id) {
