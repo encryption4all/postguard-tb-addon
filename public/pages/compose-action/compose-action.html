@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      width: 280px;
+      padding: 16px;
+      background: #fff;
+      color: #022E3D;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .header img { width: 28px; height: 28px; }
+    .header h2 { font-size: 14px; font-weight: 600; }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .toggle-label { font-size: 13px; font-weight: 500; }
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      cursor: pointer;
+    }
+    .toggle-switch input { display: none; }
+    .slider {
+      position: absolute;
+      inset: 0;
+      background: #ccc;
+      border-radius: 24px;
+      transition: background 0.2s;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      bottom: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle-switch input:checked + .slider {
+      background: #006EF4;
+    }
+    .toggle-switch input:checked + .slider::before {
+      transform: translateX(20px);
+    }
+    .status {
+      font-size: 12px;
+      color: #6b7280;
+      padding: 8px 0;
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
+      color: #022E3D;
+      cursor: pointer;
+      text-align: center;
+    }
+    .btn:hover { background: #f3f4f6; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    .btn:disabled:hover { background: #fff; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="../../icons/icon-64.svg" alt="PostGuard">
+    <h2>PostGuard</h2>
+  </div>
+
+  <div class="toggle-row">
+    <span class="toggle-label">Encrypt this email</span>
+    <label class="toggle-switch">
+      <input type="checkbox" id="toggle-encrypt">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="status" id="status-text"></div>
+
+  <div class="actions">
+    <button class="btn" id="btn-manage" disabled>Manage Access</button>
+    <button class="btn" id="btn-sign" disabled>Sign</button>
+  </div>
+
+  <script src="compose-action.js"></script>
+</body>
+</html>

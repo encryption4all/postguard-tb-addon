@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "version": "1.0.0",
+  "name": "__MSG_appName__",
+  "description": "End-to-end email encryption using identity-based encryption and Yivi",
+  "default_locale": "en",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "pg4tb@e4a.org",
+      "strict_min_version": "128.0"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "permissions": [
+    "compose",
+    "messagesRead",
+    "messagesModify",
+    "messagesMove",
+    "messagesDelete",
+    "messagesImport",
+    "accountsRead",
+    "accountsFolders",
+    "storage",
+    "scripting",
+    "alarms"
+  ],
+  "icons": {
+    "64": "icons/icon-64.svg",
+    "32": "icons/icon-32.svg",
+    "16": "icons/icon-16.svg"
+  },
+  "compose_action": {
+    "default_title": "__MSG_composeActionTitle__",
+    "default_icon": "icons/icon-disabled.svg",
+    "default_popup": "pages/compose-action/compose-action.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

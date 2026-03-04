@@ -1,0 +1,116 @@
+{
+  "appName": {
+    "message": "PostGuard"
+  },
+  "appDescription": {
+    "message": "End-to-end email encryption using identity-based encryption and Yivi"
+  },
+  "composeActionTitle": {
+    "message": "PostGuard Encryption"
+  },
+  "encryptionEnabled": {
+    "message": "PostGuard encryption is enabled"
+  },
+  "encryptionDisabled": {
+    "message": "Click to enable PostGuard encryption"
+  },
+  "displayScriptDecryptBar": {
+    "message": "This mail is encrypted using PostGuard."
+  },
+  "displayScriptWasEncryptedBar": {
+    "message": "This mail was originally encrypted using PostGuard."
+  },
+  "decryptButton": {
+    "message": "Decrypt"
+  },
+  "composeBccWarning": {
+    "message": "PostGuard does not support BCC. Either remove BCC or disable PostGuard."
+  },
+  "decryptionFailed": {
+    "message": "You did not have the correct attributes to decrypt this message."
+  },
+  "recipientUnknown": {
+    "message": "This message was not encrypted for the mail account it was received on."
+  },
+  "manageAccess": {
+    "message": "Manage Access"
+  },
+  "sign": {
+    "message": "Sign"
+  },
+  "notificationHeaderBadgesLabel": {
+    "message": "This message was sent by"
+  },
+  "pbdf.sidn-pbdf.email.email": {
+    "message": "Email address"
+  },
+  "pbdf.sidn-pbdf.mobilenumber.mobilenumber": {
+    "message": "Mobile number"
+  },
+  "pbdf.gemeente.personalData.surname": {
+    "message": "Surname"
+  },
+  "pbdf.gemeente.personalData.dateofbirth": {
+    "message": "Date of birth"
+  },
+  "pbdf.nuts.agb.agbcode": {
+    "message": "AGB code"
+  },
+  "pbdf.pbdf.surfnet-2.id": {
+    "message": "Surf EduID"
+  },
+  "displayMessageTitle": {
+    "message": "You received a PostGuard encrypted email from"
+  },
+  "displayMessageHeading": {
+    "message": "You need to prove who you are to decrypt and read this email."
+  },
+  "displayMessageQrPrefix": {
+    "message": "Scan the QR code with the Yivi app to disclose your e-mail address."
+  },
+  "displayMessageYiviHelpHeader": {
+    "message": "What is the Yivi app?"
+  },
+  "displayMessageYiviHelpBody": {
+    "message": "The Yivi app is a separate privacy-friendly authentication app (which is used also for other authentication purposes)."
+  },
+  "displayMessageYiviHelpLinkText": {
+    "message": "More information about Yivi"
+  },
+  "displayMessageYiviHelpDownloadHeader": {
+    "message": "Download the free Yivi app"
+  },
+  "policyEditorTitle": {
+    "message": "PostGuard — Manage Access"
+  },
+  "policyEditorSave": {
+    "message": "Save"
+  },
+  "policyEditorCancel": {
+    "message": "Cancel"
+  },
+  "displayMessageTitleSign": {
+    "message": "Sign the e-mail"
+  },
+  "displayMessageHeadingSign": {
+    "message": "You need to prove who you are to sign this email."
+  },
+  "composeSwitchBarEnabled": {
+    "message": "PostGuard encryption is on"
+  },
+  "composeSwitchBarDisabled": {
+    "message": "PostGuard encryption is off. Sensitive content? Turn it on."
+  },
+  "notificationComposeBadgesLabel": {
+    "message": "Recipients will know you as"
+  },
+  "encryptionError": {
+    "message": "Encryption failed. Please try again."
+  },
+  "decryptionError": {
+    "message": "Decryption failed. Please try again."
+  },
+  "networkError": {
+    "message": "Could not connect to PostGuard server. Check your network connection."
+  }
+}

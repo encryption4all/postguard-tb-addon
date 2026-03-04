@@ -1,0 +1,115 @@
+import * as esbuild from "esbuild";
+import { cpSync, mkdirSync, existsSync } from "fs";
+import path from "path";
+
+const isWatch = process.argv.includes("--watch");
+const outdir = "dist";
+
+// Ensure dist exists
+mkdirSync(outdir, { recursive: true });
+
+// Copy static assets
+function copyStatic() {
+  cpSync("manifest.json", path.join(outdir, "manifest.json"));
+  cpSync("public", outdir, { recursive: true });
+
+  // Copy pg-wasm WASM binary and JS bindings for manual loading.
+  // public/pg-wasm/load.js (our custom loader) is already copied above.
+  const pgWasmSrc = "node_modules/@e4a/pg-wasm";
+  const pgWasmDest = path.join(outdir, "pg-wasm");
+  mkdirSync(pgWasmDest, { recursive: true });
+  for (const f of ["index_bg.js", "index_bg.wasm"]) {
+    if (existsSync(path.join(pgWasmSrc, f))) {
+      cpSync(path.join(pgWasmSrc, f), path.join(pgWasmDest, f));
+    }
+  }
+}
+
+copyStatic();
+
+// Background script
+const backgroundBuild = {
+  entryPoints: ["src/background/background.ts"],
+  bundle: true,
+  outfile: path.join(outdir, "background.js"),
+  format: "esm",
+  target: "firefox128",
+  platform: "browser",
+  define: {
+    "process.env.NODE_ENV": '"production"',
+  },
+};
+
+// Message display content script
+const messageDisplayBuild = {
+  entryPoints: ["src/content/message-display.ts"],
+  bundle: true,
+  outfile: path.join(outdir, "content/message-display.js"),
+  format: "iife",
+  target: "firefox128",
+  platform: "browser",
+};
+
+// Message display CSS
+const messageDisplayCssBuild = {
+  entryPoints: ["src/content/message-display.css"],
+  bundle: true,
+  outfile: path.join(outdir, "content/message-display.css"),
+};
+
+// Compose action popup
+const composePopupBuild = {
+  entryPoints: ["src/pages/compose-action/compose-action.ts"],
+  bundle: true,
+  outfile: path.join(outdir, "pages/compose-action/compose-action.js"),
+  format: "iife",
+  target: "firefox128",
+  platform: "browser",
+};
+
+// Policy editor popup
+const policyEditorBuild = {
+  entryPoints: ["src/pages/policy-editor/policy-editor.ts"],
+  bundle: true,
+  outfile: path.join(outdir, "pages/policy-editor/policy-editor.js"),
+  format: "iife",
+  target: "firefox128",
+  platform: "browser",
+};
+
+// Yivi popup
+const yiviPopupBuild = {
+  entryPoints: ["src/pages/yivi-popup/yivi-popup.ts"],
+  bundle: true,
+  outfile: path.join(outdir, "pages/yivi-popup/yivi-popup.js"),
+  format: "iife",
+  target: "firefox128",
+  platform: "browser",
+};
+
+const builds = [
+  backgroundBuild,
+  messageDisplayBuild,
+  messageDisplayCssBuild,
+  composePopupBuild,
+  policyEditorBuild,
+  yiviPopupBuild,
+];
+
+// Filter out builds whose entry points don't exist yet
+const activeBuildConfigs = builds.filter((config) =>
+  config.entryPoints.every((ep) => existsSync(ep))
+);
+
+if (isWatch) {
+  for (const config of activeBuildConfigs) {
+    const ctx = await esbuild.context(config);
+    await ctx.watch();
+  }
+  console.log("Watching for changes...");
+} else {
+  for (const config of activeBuildConfigs) {
+    await esbuild.build(config);
+  }
+  console.log("Build complete.");
+}
