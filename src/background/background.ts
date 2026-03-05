@@ -173,7 +173,7 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
           });
           const localMsg = await (browser.messages as any).import(
             file,
-            localFolder
+            localFolder.id
           );
 
           // Move to the same folder as the sent ciphertext
@@ -255,11 +255,24 @@ for (const tab of existingTabs) {
 async function shouldEncrypt(tabId: number): Promise<boolean> {
   try {
     const details = await browser.compose.getComposeDetails(tabId);
+    console.log("[PostGuard] shouldEncrypt check:", {
+      tabId,
+      type: details.type,
+      relatedMessageId: details.relatedMessageId,
+      subject: details.subject,
+    });
     if (details.type === "reply" && details.relatedMessageId) {
-      return await isPGEncrypted(details.relatedMessageId);
+      const encrypted = await isPGEncrypted(details.relatedMessageId);
+      const wasEncrypted = !encrypted && await wasPGEncrypted(details.relatedMessageId);
+      console.log("[PostGuard] Reply to message:", {
+        relatedMessageId: details.relatedMessageId,
+        isPGEncrypted: encrypted,
+        wasPGEncrypted: wasEncrypted,
+      });
+      return encrypted || wasEncrypted;
     }
-  } catch {
-    // tab may not be ready yet
+  } catch (e) {
+    console.warn("[PostGuard] shouldEncrypt error:", e);
   }
   return false;
 }
@@ -799,8 +812,14 @@ async function handleDecryptMessage(messageId: number) {
       })
     );
 
+    // Inject X-PostGuard header so wasPGEncrypted() recognizes decrypted messages
+    const headerEnd = plaintext.indexOf("\r\n\r\n");
+    const markedPlaintext = headerEnd >= 0
+      ? plaintext.slice(0, headerEnd) + "\r\nX-PostGuard: decrypted" + plaintext.slice(headerEnd)
+      : "X-PostGuard: decrypted\r\n" + plaintext;
+
     // Import decrypted message directly into the original folder
-    const file = new File([plaintext], "decrypted.eml", {
+    const file = new File([markedPlaintext], "decrypted.eml", {
       type: "text/plain",
     });
     console.log("[PostGuard] Importing to folder:", msg.folder.id);
@@ -811,11 +830,18 @@ async function handleDecryptMessage(messageId: number) {
     // Track badges for the decrypted message
     decryptedMessages.set(importedMsgId, { badges });
 
-    // Show the decrypted message
-    await browser.mailTabs.setSelectedMessages([importedMsgId]);
-
     // Delete the encrypted original
     await (browser.messages as any).delete([messageId], true);
+
+    // Select the decrypted message in the current mail tab
+    try {
+      const mailTabs = await browser.mailTabs.query({ active: true, currentWindow: true });
+      if (mailTabs.length > 0) {
+        await browser.mailTabs.setSelectedMessages(mailTabs[0].id, [importedMsgId]);
+      }
+    } catch (e) {
+      console.warn("[PostGuard] Could not select decrypted message:", e);
+    }
   } catch (e) {
     console.error("[PostGuard] Decryption failed:", e);
     if (e instanceof Error && e.name === "OperationError") {
