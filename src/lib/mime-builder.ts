@@ -9,6 +9,8 @@ interface MimeInput {
   plainTextBody: string;
   isPlainText: boolean;
   date: Date;
+  inReplyTo?: string;
+  references?: string;
   attachments: Array<{
     name: string;
     type: string;
@@ -26,6 +28,8 @@ export function buildInnerMime(input: MimeInput): Uint8Array {
     plainTextBody,
     isPlainText,
     date,
+    inReplyTo,
+    references,
     attachments,
   } = input;
 
@@ -48,6 +52,8 @@ export function buildInnerMime(input: MimeInput): Uint8Array {
   mime += `From: ${from}\r\n`;
   mime += `Subject: ${subject}\r\n`;
   if (cc.length > 0) mime += `Cc: ${cc.join(", ")}\r\n`;
+  if (inReplyTo) mime += `In-Reply-To: ${inReplyTo}\r\n`;
+  if (references) mime += `References: ${references}\r\n`;
   mime += `Content-Type: ${contentType}\r\n`;
   mime += "X-PostGuard: 0.1\r\n";
   mime += "\r\n";
@@ -76,6 +82,40 @@ export function buildInnerMime(input: MimeInput): Uint8Array {
   }
 
   return new TextEncoder().encode(mime);
+}
+
+/**
+ * Inject headers into a MIME message, optionally removing existing ones first.
+ * Handles folded (multi-line) headers correctly.
+ */
+export function injectMimeHeaders(
+  mime: string,
+  headersToInject: Record<string, string>,
+  headersToRemove?: string[]
+): string {
+  const separatorIdx = mime.indexOf("\r\n\r\n");
+  if (separatorIdx < 0) return mime;
+
+  let headerBlock = mime.slice(0, separatorIdx);
+  const body = mime.slice(separatorIdx); // includes leading \r\n\r\n
+
+  // Remove specified headers (case-insensitive, handles folded continuation lines)
+  if (headersToRemove) {
+    for (const name of headersToRemove) {
+      const pattern = new RegExp(
+        `^${name}:.*(?:\\r\\n[ \\t]+.*)*\\r\\n`,
+        "im"
+      );
+      headerBlock = headerBlock.replace(pattern, "");
+    }
+  }
+
+  // Append new headers
+  for (const [name, value] of Object.entries(headersToInject)) {
+    headerBlock += `\r\n${name}: ${value}`;
+  }
+
+  return headerBlock + body;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {

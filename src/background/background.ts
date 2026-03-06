@@ -10,7 +10,7 @@ import {
 } from "../lib/pkg-client";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE } from "../lib/utils";
 import { getSigningKeys } from "../lib/pkg-client";
-import { buildInnerMime } from "../lib/mime-builder";
+import { buildInnerMime, injectMimeHeaders } from "../lib/mime-builder";
 import { getPlaceholderHtml, getPlaceholderText } from "../lib/placeholder";
 import { sealData, setSealStream } from "../lib/encryption";
 import { setStreamUnsealer } from "../lib/decryption";
@@ -177,7 +177,7 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
           );
 
           // Move to the same folder as the sent ciphertext
-          await browser.messages.move([localMsg.id], msg.folder);
+          await browser.messages.move([localMsg.id], msg.folder.id as any);
 
           // Delete the ciphertext from sent
           await (browser.messages as any).delete([msg.id], true);
@@ -348,6 +348,23 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         })
       );
 
+      // Fetch threading headers if replying
+      let inReplyTo: string | undefined;
+      let references: string | undefined;
+      if (details.relatedMessageId) {
+        try {
+          const relFull = await browser.messages.getFull(details.relatedMessageId);
+          const relMsgId = relFull.headers["message-id"]?.[0];
+          if (relMsgId) {
+            inReplyTo = relMsgId;
+            const relRefs = relFull.headers["references"]?.[0];
+            references = relRefs ? `${relRefs} ${relMsgId}` : relMsgId;
+          }
+        } catch (e) {
+          console.warn("[PostGuard] Could not fetch related message headers:", e);
+        }
+      }
+
       // Build inner MIME
       const mimeData = buildInnerMime({
         from: details.from,
@@ -358,6 +375,8 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         plainTextBody: details.plainTextBody,
         isPlainText: details.isPlainText,
         date,
+        inReplyTo,
+        references,
         attachments: attachmentData,
       });
 
@@ -812,11 +831,27 @@ async function handleDecryptMessage(messageId: number) {
       })
     );
 
+    // Inject threading headers from the encrypted envelope so the
+    // decrypted message stays in the correct thread.
+    const envelopeFull = await browser.messages.getFull(messageId);
+    const threadingHeaders: Record<string, string> = {};
+    const threadingRemove: string[] = [];
+    for (const name of ["in-reply-to", "references"] as const) {
+      const val = envelopeFull.headers[name]?.[0];
+      if (val) {
+        const headerName = name === "in-reply-to" ? "In-Reply-To" : "References";
+        threadingHeaders[headerName] = val;
+        threadingRemove.push(headerName);
+      }
+    }
+
+    let markedPlaintext = plaintext;
+    if (Object.keys(threadingHeaders).length > 0) {
+      markedPlaintext = injectMimeHeaders(markedPlaintext, threadingHeaders, threadingRemove);
+    }
+
     // Inject X-PostGuard header so wasPGEncrypted() recognizes decrypted messages
-    const headerEnd = plaintext.indexOf("\r\n\r\n");
-    const markedPlaintext = headerEnd >= 0
-      ? plaintext.slice(0, headerEnd) + "\r\nX-PostGuard: decrypted" + plaintext.slice(headerEnd)
-      : "X-PostGuard: decrypted\r\n" + plaintext;
+    markedPlaintext = injectMimeHeaders(markedPlaintext, { "X-PostGuard": "decrypted" });
 
     // Import decrypted message directly into the original folder
     const file = new File([markedPlaintext], "decrypted.eml", {
