@@ -1,20 +1,18 @@
 {
-    "compilerOptions": {
-        "outDir": "./build/compile/",
-        "target": "es2019",
-        "module": "esnext",
-        "sourceMap": false,
-        "allowJs": true,
-        "rootDir": ".",
-        "strict": true,
-        "noImplicitAny": false,
-        "noImplicitReturns": false,
-        "noUnusedLocals": false,
-        "removeComments": false,
-        "forceConsistentCasingInFileNames": true,
-        "moduleResolution": "node",
-        "allowSyntheticDefaultImports": true
-    },
-    "include": ["src/**/*"],
-    "exclude": ["node_modules/"]
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": false,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules", "dist"]
 }

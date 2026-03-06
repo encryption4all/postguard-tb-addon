@@ -1,968 +1,888 @@
-import { ComposeMail } from '@e4a/irmaseal-mail-utils'
+/// <reference path="../types/thunderbird.d.ts" />
+
+import { composeTabs, decryptedMessages } from "./state";
+import type { ComposeTabState } from "./state";
 import {
-    toEmail,
-    hashCon,
-    generateBoundary,
-    isPGEncrypted,
-    wasPGEncrypted,
-    getLocalFolder,
-    type_to_image,
-} from './../utils'
-import jwtDecode, { JwtPayload } from 'jwt-decode'
-import { ISealOptions, ISigningKey } from '@e4a/pg-wasm'
+  fetchPublicKey,
+  fetchVerificationKey,
+  setClientHeader,
+  PKG_URL,
+} from "../lib/pkg-client";
+import { toEmail, EMAIL_ATTRIBUTE_TYPE } from "../lib/utils";
+import { getSigningKeys } from "../lib/pkg-client";
+import { buildInnerMime, injectMimeHeaders } from "../lib/mime-builder";
+import { getPlaceholderHtml, getPlaceholderText } from "../lib/placeholder";
+import { sealData, setSealStream } from "../lib/encryption";
+import { setStreamUnsealer } from "../lib/decryption";
+import { getUSK } from "../lib/pkg-client";
+import { typeToImage } from "../lib/utils";
+import { getOrCreateLocalFolder } from "../lib/folders";
+import {
+  checkLocalJwt as checkLocalJwtFromStore,
+  storeLocalJwt as storeLocalJwtFromStore,
+  cleanUpJwts,
+} from "../lib/jwt-store";
+import type { Policy, AttributeCon, KeySort, PopupData } from "../lib/types";
 
-const DEFAULT_ENCRYPT = false
-const WIN_TYPE_COMPOSE = 'messageCompose'
-const PKG_URL = 'https://postguard-main.cs.ru.nl/pkg'
-const EMAIL_ATTRIBUTE_TYPE = 'pbdf.sidn-pbdf.email.email'
-const SENT_COPY_FOLDER = 'PostGuard Sent'
-const RECEIVED_COPY_FOLDER = 'PostGuard Received'
-const PK_KEY = 'pg-pk'
-const POSTGUARD_SUBJECT = 'PostGuard Encrypted Email'
+const POSTGUARD_SUBJECT = "PostGuard Encrypted Email";
 
-const PG_WHITE = '#FFFFFF'
-const PG_INFO_COLOR = '#022E3D'
-const PG_INFO_ACCENT_COLOR = '#006EF4'
-const PG_ERR_COLOR = '#A63232'
-const PG_WARN_COLOR = '#FFCC00'
-const PG_DISABLED_COLOUR = '#757575'
+const { version: tbVersion } = await browser.runtime.getBrowserInfo();
+const extVersion = browser.runtime.getManifest().version;
 
-const i18n = (key: string) => browser.i18n.getMessage(key)
+export const PG_CLIENT_HEADER = {
+  "X-PostGuard-Client-Version": `Thunderbird,${tbVersion},pg4tb,${extVersion}`,
+};
 
-const VERSION: Version = await browser.runtime.getBrowserInfo().then(({ version }) => {
-    const parts = version.split('.')
-    return {
-        raw: version,
-        major: parseInt(parts[0]),
-        minor: parseInt(parts[1]),
-        revision: parts.length > 2 ? parseInt(parts[2]) : 0,
+console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
+
+setClientHeader(PG_CLIENT_HEADER);
+
+// --- Module-level state (declared before listeners to avoid TDZ) ---
+let pgWasm: any = null;
+let pk: string | null = null;
+let vk: string | null = null;
+
+// Pending popup tracking maps
+const pendingPolicyEditors = new Map<
+  number,
+  {
+    composeTabId: number;
+    initialPolicy: Policy;
+    sign: boolean;
+    resolve: (policy: Policy) => void;
+    reject: (err: Error) => void;
+  }
+>();
+
+const pendingYiviPopups = new Map<
+  number,
+  {
+    data: PopupData;
+    resolve: (jwt: string) => void;
+    reject: (err: Error) => void;
+  }
+>();
+
+const checkLocalJwt = checkLocalJwtFromStore;
+const storeLocalJwt = storeLocalJwtFromStore;
+
+// --- Load pg-wasm and fetch PKG keys on startup ---
+console.log("[PostGuard] Loading pg-wasm and fetching PKG keys...");
+
+// Use indirect dynamic import to prevent esbuild from resolving it
+const pgWasmPath = "./pg-wasm/load.js";
+const modPromise = import(/* @vite-ignore */ pgWasmPath).then((mod: any) => {
+  setSealStream(mod.sealStream as Parameters<typeof setSealStream>[0]);
+  setStreamUnsealer(mod.StreamUnsealer);
+  console.log("[PostGuard] pg-wasm loaded");
+  return mod;
+}).catch((e: Error) => {
+  console.error("[PostGuard] Failed to load pg-wasm:", e);
+  return null;
+});
+
+const pkPromise = fetchPublicKey();
+const vkPromise = fetchVerificationKey();
+
+// --- Register message display script ---
+// A restarting background will try to re-register — catch the error.
+browser.scripting.messageDisplay
+  .registerScripts([
+    {
+      id: "postguard-message-display",
+      css: ["/content/message-display.css"],
+      js: ["/content/message-display.js"],
+    },
+  ])
+  .catch(console.info);
+
+// --- Register ALL event listeners BEFORE heavy awaits ---
+// This ensures popups/content scripts can communicate with the background
+// even while pg-wasm and PKG keys are still loading.
+
+browser.runtime.onMessage.addListener(
+  (message: unknown, sender: browser.MessageSender) => {
+    if (!message || typeof message !== "object") return false;
+    const msg = message as Record<string, unknown>;
+
+    // For compose-action popups, sender.tab is the popup tab itself,
+    // not the compose tab. We need to find the actual compose tab
+    // by querying for compose tabs in the sender's window.
+    const resolveComposeTabId = async (): Promise<number | undefined> => {
+      if (!sender.tab?.windowId) return undefined;
+      const tabs = await browser.tabs.query({
+        windowId: sender.tab.windowId,
+        type: "messageCompose",
+      });
+      return tabs[0]?.id;
+    };
+
+    switch (msg.type) {
+      case "queryMessageState":
+        console.log("[PostGuard] queryMessageState sender:", JSON.stringify({
+          tabId: sender.tab?.id,
+          tabType: sender.tab?.type,
+          windowId: sender.tab?.windowId,
+          url: sender.url,
+        }));
+        return handleQueryMessageState(sender.tab?.id);
+      case "toggleEncryption":
+        return resolveComposeTabId().then((id) => handleToggleEncryption(id));
+      case "getComposeState":
+        return resolveComposeTabId().then((id) => handleGetComposeState(id));
+      case "openPolicyEditor":
+        return handleOpenPolicyEditor(sender.tab?.windowId, false);
+      case "openSignEditor":
+        return handleOpenPolicyEditor(sender.tab?.windowId, true);
+      case "policyEditorInit":
+        return handlePolicyEditorInit(sender.tab?.windowId);
+      case "policyEditorDone":
+        return handlePolicyEditorDone(
+          sender.tab?.windowId,
+          msg.policy as Policy
+        );
+      case "yiviPopupInit":
+        return handleYiviPopupInit(sender.tab?.windowId);
+      case "yiviPopupDone":
+        return handleYiviPopupDone(
+          sender.tab?.windowId,
+          msg.jwt as string
+        );
+      case "decryptMessage":
+        return handleDecryptMessage(msg.messageId as number);
+      default:
+        return false;
     }
-})
-const EXT_VERSION = await browser.runtime.getManifest()['version']
+  }
+);
 
-const PG_CLIENT_HEADER = {
-    'X-PostGuard-Client-Version': `Thunderbird,${VERSION.raw},pg4tb,${EXT_VERSION}`,
-}
+browser.compose.onBeforeSend.addListener(handleBeforeSend);
 
-// Keeps track of displayScript connections.
-const displayScriptPorts = {}
-
-console.log(
-    `[background]: postguard-tb-addon v${EXT_VERSION} started (Thunderbird v${VERSION.raw}).`
-)
-console.log(
-    '[background]: loading wasm module and retrieving master public key and master verification key.'
-)
-
-const vk_promise: Promise<string> = fetch(`${PKG_URL}/v2/sign/parameters`)
-    .then((r) => r.json())
-    .then((j) => j.publicKey)
-
-const pk_promise: Promise<string> = retrievePublicKey()
-const mod_promise = import('@e4a/pg-wasm')
-
-const [pk, vk, mod] = await Promise.all([pk_promise, vk_promise, mod_promise])
-
-// Keeps track of which tabs (messageCompose type) should use encryption.
-// Also, add a bar to any existing compose windows.
-const composeTabs: {
-    [tabId: number]: {
-        tab: object
-        encrypt: boolean
-        barId: number
-        notificationId?: number
-        policy?: Policy
-        configWindowId?: number
-        signId?: Policy
-        signWindowId?: number
-        newMsgId?: number
-        details?: object
-    }
-} = {}
-
-const decryptedMessages: {
-    [messageId: number]: {
-        badges?: { type: string; value: string }[]
-    }
-} = {}
-
-// Populate composeTabs during startup.
-const tabs = await browser.tabs.query({ type: WIN_TYPE_COMPOSE })
-for (const tab of tabs) {
-    const encrypt = await shouldEncrypt(tab.id)
-    const barId = await addBar(tab, encrypt)
-    composeTabs[tab.id] = { encrypt, tab, barId }
-}
-
-// Determines the encryption policy based on the tab.
-async function shouldEncrypt(tabId: number): Promise<boolean> {
-    const details = await browser.compose.getComposeDetails(tabId)
-    return (
-        (details.type === 'reply' && (await wasPGEncrypted(details.relatedMessageId))) ||
-        DEFAULT_ENCRYPT
-    )
-}
-
-console.log('[background]: startup composeTabs: ', Object.keys(composeTabs))
-
-// Run the cleanup every 10 minutes.
-setInterval(cleanUp, 600000)
-
-// Register the messageDisplayScript.
-await browser.messageDisplayScripts.register({
-    js: [{ file: 'messageDisplay.js' }],
-})
-
-// Cleanup notifications and windows.
-// TODO: this doesn't run somehow.
-browser.runtime.onSuspend.addListener(() => {
-    Object.entries(composeTabs).forEach(([id, { notificationId }]) => {
-        console.log(`tab with id ${id} has notification ${notificationId}`)
-    })
-})
-
-// Store incoming ports. We use ports for the display scripts.
-// The other scripts use brower.runtime.addListener with promisified return values.
-browser.runtime.onConnect.addListener((p) => {
-    const id = p.sender.tab.id
-    switch (p.name) {
-        case 'displayScript':
-            displayScriptPorts[id] = p
-            p.onMessage.addListener(displayListener)
-            p.onDisconnect.addListener(() => delete displayScriptPorts[id])
-            break
-        default:
-            break
-    }
-})
-
-const displayListener = async (message, port) => {
-    const {
-        tab: { id: tabId, windowId },
-    } = port.sender
-
-    switch (message.command) {
-        case 'queryDetails': {
-            // Detects pg encryption
-            const header = await browser.messageDisplay.getDisplayedMessage(tabId)
-            const id = header.id
-            const isEncrypted = await isPGEncrypted(id)
-
-            if (isEncrypted) {
-                port.postMessage({ isEncrypted })
-                await messenger.notificationbar.create({
-                    windowId,
-                    tabId,
-                    label: i18n('displayScriptDecryptBar'),
-                    icon: 'icons/pg_logo_no_text.svg',
-                    placement: 'message',
-                    style: { color: PG_WHITE, 'background-color': PG_INFO_COLOR },
-                    buttons: [{ id: `decrypt-${id}`, label: 'Decrypt', accesskey: 'decrypt' }],
-                })
-                return
-            }
-
-            if (decryptedMessages[id]?.badges) {
-                // display sender identity in the UI.
-                await messenger.notificationbar.create({
-                    windowId,
-                    tabId,
-                    label: i18n('notificationHeaderBadgesLabel'),
-                    icon: 'icons/pg_logo_no_text.svg',
-                    placement: 'message',
-                    style: { color: PG_WHITE, 'background-color': PG_INFO_COLOR },
-                    buttons: [],
-                    badges: decryptedMessages[id].badges,
-                })
-                return
-            }
-
-            // Detects if mail was once encrypted using PostGuard
-            const wasEncrypted = await wasPGEncrypted(id)
-
-            if (wasEncrypted) {
-                await messenger.notificationbar.create({
-                    tabId,
-                    windowId,
-                    label: i18n('displayScriptWasEncryptedBar'),
-                    icon: 'icons/pg_logo_no_text.svg',
-                    placement: 'message',
-                    style: { color: PG_WHITE, 'background-color': PG_INFO_COLOR },
-                })
-            }
-
-            break
-        }
-        default:
-            break
-    }
-}
-
-browser.notificationbar.onButtonClicked.addListener(async (windowId, notificationId, buttonId) => {
-    if (buttonId.startsWith('decrypt')) {
-        try {
-            const id: number = +buttonId.split('-')[1]
-            await decryptMessage(id)
-        } catch {
-            // do nothing
-        }
-    }
-})
-
-// Watch for outgoing mails. The encryption process starts here.
-browser.compose.onBeforeSend.addListener(async (tab, details) => {
-    if (!composeTabs[tab.id].encrypt) return
-
-    if (composeTabs[tab.id].configWindowId) {
-        await messenger.windows.update(composeTabs[tab.id].configWindowId, {
-            drawAttention: true,
-            focused: true,
-        })
-        return { cancel: true }
-    }
-
-    if (details.bcc.length) {
-        if (!composeTabs[tab.id].notificationId) {
-            const notificationId = await messenger.notificationbar.create({
-                windowId: tab.windowId,
-                tabId: tab.id,
-                label: i18n('composeBccWarning'),
-                placement: 'top',
-                style: { color: PG_WHITE, 'background-color': PG_WARN_COLOR },
-                icon: 'icons/pg_logo_no_text.svg',
-            })
-            composeTabs[tab.id].notificationId = notificationId
-        }
-        return { cancel: true }
-    }
-
-    const originalSubject = details.subject
-    details.subject = POSTGUARD_SUBJECT
-
-    const attachments = await browser.compose.listAttachments(tab.id)
-    const date = new Date()
-
-    // Create the inner mime from the details.
-
-    let innerContenType = ''
-    let boundary = ''
-    let contentType = `${details.isPlainText ? 'text/plain' : 'text/html'}; charset=utf-8`
-    const attachmentLen = attachments.length
-
-    if (attachmentLen > 0) {
-        innerContenType = contentType
-        boundary = generateBoundary()
-        contentType = `multipart/mixed; boundary="${boundary}"`
-    }
-
-    let innerMime = ''
-    innerMime += `Date: ${date.toUTCString()}\r\n`
-    innerMime += 'MIME-Version: 1.0\r\n'
-    innerMime += `To: ${String(details.to)}\r\n`
-    innerMime += `From: ${String(details.from)}\r\n`
-    innerMime += `Subject: ${originalSubject}\r\n`
-    if (details.cc.length > 0) innerMime += `Cc: ${String(details.cc)}\r\n`
-    innerMime += `Content-Type: ${contentType}\r\n`
-    innerMime += `X-PostGuard: 0.1\r\n`
-    innerMime += '\r\n'
-
-    let innerBody = details.isPlainText ? details.plainTextBody : details.body
-    if (attachmentLen > 0)
-        innerBody = `--${boundary}\r\nContent-Type: ${innerContenType}\r\n\r\n${innerBody}\r\n`
-    innerMime += innerBody
-
-    const tempFile = await browser.pg4tb.createTempFile()
-    const encoder = new TextEncoder()
-    const readable = new ReadableStream<Uint8Array>({
-        start: async (controller: ReadableStreamController<Uint8Array>) => {
-            controller.enqueue(encoder.encode(innerMime))
-
-            await browser.pg4tb.writeToFile(tempFile, innerMime)
-
-            for (const att of attachments) {
-                const isLast = att.id === attachments[attachmentLen - 1].id
-                const file: File = await browser.compose.getAttachmentFile(att.id)
-                const buf = await file.arrayBuffer()
-                const b64 = Buffer.from(buf).toString('base64')
-                const formatted = b64.replace(/(.{76})/g, '$1\r\n')
-
-                let attMime = ''
-                attMime += `--${boundary}\r\nContent-Type: ${file.type}; name="${file.name}"\r\n`
-                attMime += `Content-Disposition: attachment; filename="${file.name}"\r\n`
-                attMime += `Content-Transfer-Encoding: base64\r\n\r\n`
-                attMime += formatted
-                attMime += isLast ? `\r\n--${boundary}--\r\n` : '\r\n'
-
-                controller.enqueue(encoder.encode(attMime))
-                await browser.pg4tb.writeToFile(tempFile, attMime)
-                await browser.compose.removeAttachment(tab.id, att.id)
-            }
-
-            controller.close()
-        },
-    })
-
-    let encrypted = new Uint8Array(0)
-    const writable = new WritableStream<Uint8Array>({
-        write: (chunk: Uint8Array) => {
-            encrypted = new Uint8Array([...encrypted, ...chunk])
-        },
-    })
-
-    const timestamp = Math.round(date.getTime() / 1000)
-
-    const customPolicies = composeTabs[tab.id].policy
-    const policy = [...details.to, ...details.cc].reduce((total, recipient) => {
-        const id = toEmail(recipient)
-
-        // If there's a custom policy, use it.
-        if (customPolicies && customPolicies[id])
-            total[id] = { ts: timestamp, con: customPolicies[id] }
-        else {
-            // otherwise fall back to using email
-            total[id] = { ts: timestamp, con: [{ t: EMAIL_ATTRIBUTE_TYPE, v: id }] }
-        }
-
-        // Make sure no email values are capitalized.
-        total[id].con = total[id].con.map(({ t, v }) => {
-            if (t === EMAIL_ATTRIBUTE_TYPE) return { t, v: v.toLowerCase() }
-            else return { t, v }
-        })
-
-        return total
-    }, {})
-
-    const from = toEmail(details.from)
-
-    // Sign with email under the public signing identity (email).
-    const pubSignId = [{ t: EMAIL_ATTRIBUTE_TYPE, v: from }]
-
-    const privSignId = composeTabs[tab.id].signId?.[from]?.filter(
-        ({ t }) => t !== EMAIL_ATTRIBUTE_TYPE
-    )
-
-    const totalId = [...pubSignId, ...(privSignId ? privSignId : [])]
-
-    // Get a JWT or use one from the storage.
-    const jwt = await checkLocalStorage(totalId).catch(async () => {
-        const jwt = await createSessionPopup(totalId, 'Signing')
-        await storeLocalStorage(totalId, jwt)
-        return jwt
-    })
-    const { pubSignKey, privSignKey } = await getSigningKeys(jwt, { pubSignId, privSignId })
-
-    const sealOptions: ISealOptions = {
-        policy,
-        pubSignKey,
-        ...(privSignKey && { privSignKey }),
-    }
-
-    console.log('Sealing with options: ', sealOptions)
-
-    const tEncStart = performance.now()
-    await mod.sealStream(pk, sealOptions, readable, writable)
-    console.log(`Encryption took ${performance.now() - tEncStart} ms`)
-
-    // Create the attachment
-    const encryptedFile = new File([encrypted], `postguard.encrypted`, {
-        type: 'application/postguard; charset=utf-8',
-    })
-
-    // Add the encrypted file attachment
-    await browser.compose.addAttachment(tab.id, { file: encryptedFile })
-
-    const compose = new ComposeMail()
-    compose.setSender(details.from)
-
-    // This doesn't work in onBeforeSend due to a bug, hence we set this
-    // when the PostGuard switch is turned on (see messenger.switchbar.onButtonClicked.addListener).
-    // details.deliveryFormat = 'both'
-
-    details.plainTextBody = compose.getPlainText()
-    details.body = compose.getHtmlText()
-
-    // Save a copy of the message in the sent folder.
-    // 1) Import copy to local sent folder
-    // The rest happens in onAfterSend:
-    // 2) Move to final folder (sent folder),
-    // 3) Cleanup: remove ciphertext.
-    // TODO: use import(): https://webextension-api.thunderbird.net/en/latest/messages.html#import-file-destination-properties
-
-    getLocalFolder(SENT_COPY_FOLDER)
-        .then((localFolder) => browser.pg4tb.copyFileMessage(tempFile, localFolder))
-        .then((newMsgId) => {
-            composeTabs[tab.id].newMsgId = newMsgId
-        })
-        .catch((e) => console.log('failed to create plaintext copy in sent folder: ', e))
-
-    return { cancel: false, details }
-})
-
-// Cleanup: remove ciphertext emails from sent folder.
 browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
-    sendInfo.messages.forEach(async (m) => {
-        if ((await isPGEncrypted(m.id)) && composeTabs[tab.id].newMsgId) {
-            // Move to sent folder
-            await browser.messages.move([composeTabs[tab.id].newMsgId], m.folder)
-            // Delete original sent email (ciphertext).
-            await browser.messages.delete([m.id], true)
-            // cleanup composeTabs
-            delete composeTabs[tab.id]
+  const state = composeTabs.get(tab.id);
+  if (!state?.sentMimeData) return;
+
+  try {
+    for (const msg of sendInfo.messages) {
+      if (await isPGEncrypted(msg.id)) {
+        // Import plaintext copy to local sent folder
+        const localFolder = await getOrCreateLocalFolder("PostGuard Sent");
+        if (localFolder) {
+          const file = new File([state.sentMimeData as BlobPart], "sent.eml", {
+            type: "text/plain",
+          });
+          const localMsg = await (browser.messages as any).import(
+            file,
+            localFolder.id
+          );
+
+          // Move to the same folder as the sent ciphertext
+          await browser.messages.move([localMsg.id], msg.folder.id as any);
+
+          // Delete the ciphertext from sent
+          await (browser.messages as any).delete([msg.id], true);
         }
-    })
-})
-
-// Listen for notificationbar switch button clicks.
-messenger.switchbar.onButtonClicked.addListener(
-    async (windowId: number, barId: number, buttonId: string, enabled: boolean) => {
-        if (['btn-switch'].includes(buttonId)) {
-            const tabIdKey = Object.keys(composeTabs).find(
-                (key) => composeTabs[key]?.barId === barId
-            )
-            if (tabIdKey) {
-                const tabId = Number(tabIdKey)
-                composeTabs[tabId].encrypt = enabled
-
-                // if PostGuard is enabled turn on deliveryFormat = both
-                const details = await browser.compose.getComposeDetails(tabId)
-                await browser.compose.setComposeDetails(tabId, {
-                    ...details,
-                    deliveryFormat: enabled ? 'both' : 'auto',
-                })
-
-                // Remove the notification if PostGuard is turned off.
-                if (composeTabs[tabId].notificationId && !enabled) {
-                    await messenger.notificationbar.clear(composeTabs[tabId].notificationId)
-                    composeTabs[tabId].notificationId = undefined
-                }
-            }
-            return { close: false }
-        }
+      }
     }
-)
+  } catch (e) {
+    console.error("[PostGuard] Failed to manage sent copy:", e);
+  } finally {
+    // Clean up compose tab state
+    composeTabs.delete(tab.id);
+  }
+});
 
-// Remove the notification on dismiss.
-messenger.notificationbar.onDismissed.addListener((windowId, notificationId) => {
-    const tabId = Object.keys(composeTabs).find(
-        (key) => composeTabs[key]?.notificationId === notificationId
-    )
-    if (tabId) composeTabs[tabId].notificationId = undefined
-})
-
-// Keep track of all the compose tabs created.
-browser.tabs.onCreated.addListener(async (tab) => {
-    const win = await browser.windows.get(tab.windowId)
-
-    // Check the windowType of the tab.
-    if (win.type === WIN_TYPE_COMPOSE) {
-        const enabled = await shouldEncrypt(tab.id)
-        const barId = await addBar(tab, enabled)
-
-        // Register the tab.
-        composeTabs[tab.id] = {
-            encrypt: enabled,
-            barId,
-            tab,
-        }
+browser.windows.onCreated.addListener(async (window) => {
+  if (window.type === "messageCompose") {
+    const tabs = await browser.tabs.query({ windowId: window.id });
+    if (tabs.length > 0 && tabs[0].id != null) {
+      const tab = tabs[0];
+      const encrypt = await shouldEncrypt(tab.id);
+      composeTabs.set(tab.id, { encrypt });
+      await updateComposeActionIcon(tab.id);
     }
-})
+  }
+});
 
-async function decryptMessage(msgId: number) {
-    const msg = await browser.messages.get(msgId)
+browser.alarms.create("jwt-cleanup", { periodInMinutes: 10 });
+browser.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "jwt-cleanup") {
+    cleanUpJwts().catch(console.error);
+  }
+});
 
-    const attachments = await browser.messages.listAttachments(msg.id)
-    const filtered = attachments.filter((att) => att.name === 'postguard.encrypted')
-    if (filtered.length !== 1) return
+// --- Now await the heavy async loading ---
 
-    const pgPartName = filtered[0].partName
+const [_pgWasm, _pk, _vk] = await Promise.all([
+  modPromise,
+  pkPromise.catch((e: Error) => { console.error("[PostGuard] PK fetch failed:", e); return null; }),
+  vkPromise.catch((e: Error) => { console.error("[PostGuard] VK fetch failed:", e); return null; }),
+]);
+pgWasm = _pgWasm;
+pk = _pk as string | null;
+vk = _vk as string | null;
 
+if (pk) console.log("[PostGuard] Master public key loaded");
+if (vk) console.log("[PostGuard] Verification key loaded");
+
+// --- Compose Action: toggle encryption per tab ---
+
+async function updateComposeActionIcon(tabId: number) {
+  const state = composeTabs.get(tabId);
+  const enabled = state?.encrypt ?? false;
+  await browser.composeAction.setIcon({
+    tabId,
+    path: enabled ? "icons/icon-enabled.svg" : "icons/icon-disabled.svg",
+  });
+  await browser.composeAction.setTitle({
+    tabId,
+    title: enabled
+      ? browser.i18n.getMessage("encryptionEnabled")
+      : browser.i18n.getMessage("encryptionDisabled"),
+  });
+}
+
+// Initialize state for any existing compose tabs on startup
+const existingTabs = await browser.tabs.query({ type: "messageCompose" });
+for (const tab of existingTabs) {
+  if (tab.id != null) {
+    const encrypt = await shouldEncrypt(tab.id);
+    composeTabs.set(tab.id, { encrypt });
+    await updateComposeActionIcon(tab.id);
+  }
+}
+
+async function shouldEncrypt(tabId: number): Promise<boolean> {
+  try {
+    const details = await browser.compose.getComposeDetails(tabId);
+    console.log("[PostGuard] shouldEncrypt check:", {
+      tabId,
+      type: details.type,
+      relatedMessageId: details.relatedMessageId,
+      subject: details.subject,
+    });
+    if (details.type === "reply" && details.relatedMessageId) {
+      const encrypted = await isPGEncrypted(details.relatedMessageId);
+      const wasEncrypted = !encrypted && await wasPGEncrypted(details.relatedMessageId);
+      console.log("[PostGuard] Reply to message:", {
+        relatedMessageId: details.relatedMessageId,
+        isPGEncrypted: encrypted,
+        wasPGEncrypted: wasEncrypted,
+      });
+      return encrypted || wasEncrypted;
+    }
+  } catch (e) {
+    console.warn("[PostGuard] shouldEncrypt error:", e);
+  }
+  return false;
+}
+
+async function isPGEncrypted(msgId: number): Promise<boolean> {
+  const attachments = await browser.messages.listAttachments(msgId);
+  return attachments.some((att) => att.name === "postguard.encrypted");
+}
+
+// --- Alarm keepalive for onBeforeSend (MV3 anti-termination pattern) ---
+
+function keepAlive(name: string, promise: Promise<unknown>) {
+  const listener = (alarm: { name: string }) => {
+    if (alarm.name === name) {
+      console.log(`[PostGuard] Keepalive: waiting for ${name}`);
+    }
+  };
+  browser.alarms.create(name, { periodInMinutes: 0.25 });
+  browser.alarms.onAlarm.addListener(listener);
+
+  return promise.finally(() => {
+    browser.alarms.clear(name);
+    browser.alarms.onAlarm.removeListener(listener);
+  });
+}
+
+// --- onBeforeSend: encryption hook ---
+
+async function handleBeforeSend(tab: { id: number }, details: any) {
+  const state = composeTabs.get(tab.id);
+  if (!state?.encrypt) return;
+
+  // BCC check
+  if (details.bcc.length > 0) {
+    console.warn("[PostGuard] BCC not supported with encryption");
+    return { cancel: true };
+  }
+
+  // If policy editor is open, bring it to focus
+  if (state.configWindowId) {
+    await browser.windows.update(state.configWindowId, {
+      drawAttention: true,
+      focused: true,
+    });
+    return { cancel: true };
+  }
+
+  if (!pk) {
+    console.error("[PostGuard] No public key available, cannot encrypt");
+    return { cancel: true };
+  }
+
+  const { promise, resolve } = Promise.withResolvers<
+    { cancel?: boolean; details?: Partial<typeof details> } | void
+  >();
+
+  keepAlive("onBeforeSend", (async () => {
     try {
-        const attFile = await browser.messages.getAttachmentFile(msg.id, pgPartName)
-        const readable = attFile.stream()
-        const unsealer = await mod.StreamUnsealer.new(readable, vk)
-        const accountId = msg.folder.accountId
-        const defaultIdentity = await browser.identities.getDefault(accountId)
-        const recipientId = toEmail(defaultIdentity.email)
-        const recipients = unsealer.inspect_header()
-        const sender = msg.author
-        const me = recipients.get(recipientId)
+      const originalSubject = details.subject;
+      const date = new Date();
+      const timestamp = Math.round(date.getTime() / 1000);
 
-        if (!me) {
-            const e = new Error('recipient identifier not found in header')
-            e.name = 'RecipientUnknownError'
-            throw e
-        }
-
-        const keyRequest = Object.assign({}, me)
-        let hints = me.con
-
-        // Convert hints.
-        hints = hints.map(({ t, v }) => {
-            if (t === EMAIL_ATTRIBUTE_TYPE) return { t, v: recipientId }
-            else return { t, v }
+      // Build attachments list
+      const composeAttachments = await browser.compose.listAttachments(tab.id);
+      const attachmentData = await Promise.all(
+        composeAttachments.map(async (att) => {
+          const file = await browser.compose.getAttachmentFile(att.id) as unknown as File;
+          return {
+            name: file.name,
+            type: file.type,
+            data: await file.arrayBuffer(),
+          };
         })
+      );
 
-        // Convert hidden policy to attribute request.
-        keyRequest.con = keyRequest.con.map(({ t, v }) => {
-            if (t === EMAIL_ATTRIBUTE_TYPE) return { t, v: recipientId }
-            else if (v === '' || v.includes('*')) return { t }
-            else return { t, v }
-        })
-
-        console.log('Trying decryption with policy: ', keyRequest, hints)
-
-        // Check localStorage, otherwise create a popup to retrieve a JWT.
-        const jwt = await checkLocalStorage(hints).catch(() =>
-            createSessionPopup(keyRequest.con, 'Decryption', hints, toEmail(sender))
-        )
-        /// Use the JWT to retrieve a USK.
-        const usk = await getUSK(jwt, keyRequest.ts)
-
-        let tempFile = -1
-        let data = ''
-
-        if (VERSION.major < 106) tempFile = await browser.pg4tb.createTempFile()
-
-        const decoder = new TextDecoder()
-        const writable = new WritableStream({
-            write: async (chunk: Uint8Array) => {
-                const decoded = decoder.decode(chunk, { stream: true })
-                if (VERSION.major < 106) await browser.pg4tb.writeToFile(tempFile, decoded)
-                else data += decoded
-            },
-            close: async () => {
-                const finalDecoded = decoder.decode()
-                if (VERSION.major < 106) await browser.pg4tb.writeToFile(tempFile, finalDecoded)
-                else data += finalDecoded
-            },
-        })
-
-        const senderIdentity = await unsealer.unseal(recipientId, usk, writable)
-        console.log('Sender verification successful: ', senderIdentity)
-
-        const privBadges = senderIdentity?.private?.con ?? []
-        const badges = [...senderIdentity.public.con, ...privBadges].map(({ t, v }) => {
-            return { type: type_to_image(t), value: v }
-        })
-
-        // Store the JWT if decryption succeeded.
-        await storeLocalStorage(hints, jwt)
-
-        // 1) Decrypt into new local folder message,
-        // 2) Move to original folder (usually inbox),
-        // 2) Show new inbox message,
-        // 3) Remove original message.
-
-        const localFolder = await getLocalFolder(RECEIVED_COPY_FOLDER)
-
-        let localMsgId: number
-        if (VERSION.major < 106)
-            localMsgId = await browser.pg4tb.copyFileMessage(tempFile, localFolder, msg.id)
-        else {
-            const file = new File([data], 'tmp.eml', { type: 'text/plain' })
-            const localMsgheader = await browser.messages.import(file, localFolder)
-            localMsgId = localMsgheader.id
-        }
-
-        const localMsg = await browser.messages.get(localMsgId)
-
-        await browser.messages.move([localMsgId], msg.folder)
-
-        // FIXME: Ugly workaround until messages.move() returns the message id.
-        // Doesn't work consistently unfortunately.
-
-        const fromDate: Date = new Date(localMsg.date.getTime())
-        fromDate.setSeconds(fromDate.getSeconds() - 1)
-        const toDate: Date = new Date(localMsg.date.getTime())
-        toDate.setSeconds(localMsg.date.getSeconds() + 1)
-
-        let moved
-        let tried = 0
-        do {
-            const queryDetails = {
-                folder: msg.folder,
-                subject: localMsg.subject,
-                recipients: localMsg.recipients.join(';'),
-                author: localMsg.author,
-                fromDate,
-                toDate,
-            }
-            moved = await browser.messages.query(queryDetails)
-
-            await new Promise((res) => setTimeout(res, 100))
-            tried++
-        } while (moved.messages.length !== 1 && tried < 10)
-
+      // Fetch threading headers if replying
+      let inReplyTo: string | undefined;
+      let references: string | undefined;
+      if (details.relatedMessageId) {
         try {
-            const movedMsgId = moved.messages[0].id
-
-            // store the badges
-            decryptedMessages[movedMsgId] = { badges }
-
-            if (VERSION.major < 106) await browser.messageDisplay.open({ messageId: movedMsgId })
-            else await browser.mailTabs.setSelectedMessages([movedMsgId])
-        } catch (e: unknown) {
-            e instanceof Error && console.log('switching to message failed: ', e.message)
-        }
-
-        await browser.messages.delete([msg.id], true)
-    } catch (e: unknown) {
-        if (e instanceof Error) console.log('error during decryption: ', e.message, e.name)
-        if (e instanceof Error && e.name === 'OperationError')
-            await notifyDecryptionFailed(i18n('decryptionFailed'))
-        if (e instanceof Error && e.name === 'RecipientUnknownError')
-            await notifyDecryptionFailed(i18n('recipientUnknown'))
-    }
-}
-
-// Cleans up the local storage.
-async function cleanUp(): Promise<void> {
-    const all = await browser.storage.local.get(null)
-    const now = Date.now() / 1000
-    for (const [hash, val] of Object.entries(all)) {
-        if (val) {
-            const { exp } = val as { encoded: string; exp: number }
-            if (now > exp) await browser.storage.local.remove(hash)
-        }
-    }
-}
-
-// Best-effort attempt to detect if darkMode is enabled.
-async function detectMode(): Promise<boolean> {
-    let darkMode = false
-    try {
-        const currentTheme = await browser.theme.getCurrent()
-        const toolbarHSL = currentTheme.colors.toolbar
-        const hslRegExp = /hsl\((\d+),\s*([\d.]+)%,\s*([\d.]+)%\)/gm
-        const found = hslRegExp.exec(toolbarHSL)
-        if (found && found[3]) {
-            darkMode = parseInt(found[3]) < 50
-        }
-    } catch (e) {
-        // fallback to false
-    }
-    return darkMode
-}
-
-async function addSignBar(
-    windowId: number,
-    tabId: number,
-    scenario: 'compose' | 'header'
-): Promise<number> {
-    return new Promise((resolve, reject) => {
-        if (!composeTabs[tabId].signId) return reject()
-
-        const pol: Policy = composeTabs[tabId].signId || {}
-        const badges = Object.values(pol)[0].map(({ t, v }) => {
-            return { type: type_to_image(t), value: v }
-        })
-
-        messenger.notificationbar
-            .create({
-                windowId,
-                label: i18n(`notification${scenario}BadgesLabel`),
-                icon: 'icons/sign.svg',
-                placement: scenario === 'compose' ? 'top' : 'message',
-                style: { color: PG_WHITE, 'background-color': PG_INFO_COLOR },
-                buttons: [],
-                badges,
-            })
-            .then((id: number) => resolve(id))
-    })
-}
-
-async function addBar(tab, enabled): Promise<number> {
-    const darkMode = await detectMode()
-    const notificationId = await messenger.switchbar.create({
-        enabled,
-        windowId: tab.windowId,
-        buttonId: 'btn-switch',
-        placement: 'top',
-        iconEnabled: 'icons/pg_logo_no_text.svg',
-        iconDisabled: `icons/pg_logo${darkMode ? '' : '_grey'}_no_text.svg`,
-        buttons: [
-            {
-                id: 'postguard-configure',
-                label: i18n('attributeSelectionButtonLabel'),
-                accesskey: 'manage access',
-            },
-            {
-                id: 'postguard-sign',
-                label: i18n('attributeSelectionButtonLabelSign'),
-                accesskey: 'sign',
-            },
-        ],
-        labels: {
-            enabled: i18n('composeSwitchBarEnabledHtml'),
-            disabled: i18n('composeSwitchBarDisabledHtml'),
-        },
-        style: {
-            'color-enabled': PG_WHITE, // text color
-            'color-disabled': darkMode ? PG_INFO_COLOR : PG_WHITE,
-            'background-color-enabled': PG_INFO_COLOR, // background of bar
-            'background-color-disabled': darkMode ? PG_WHITE : PG_INFO_COLOR,
-            'slider-background-color-enabled': PG_INFO_ACCENT_COLOR, // background of slider
-            'slider-background-color-disabled': darkMode ? PG_INFO_COLOR : PG_DISABLED_COLOUR,
-            'slider-color-enabled': PG_WHITE, // slider itself
-            'slider-color-disabled': darkMode ? PG_WHITE : PG_WHITE,
-        },
-    })
-
-    return notificationId
-}
-
-async function notifyDecryptionFailed(msg: string) {
-    const activeMailTabs = await browser.tabs.query({ mailTab: true, active: true })
-    if (activeMailTabs.length === 1)
-        await messenger.notificationbar.create({
-            windowId: activeMailTabs[0].windowId,
-            tabId: activeMailTabs[0].tabId,
-            label: msg,
-            placement: 'message',
-            style: { color: PG_WHITE, 'background-color': PG_ERR_COLOR },
-            icon: 'icons/pg_logo_no_text.svg',
-        })
-}
-
-// Check localStorage for a conjunction.
-async function checkLocalStorage(con: AttributeCon): Promise<string> {
-    const hash = await hashCon(con)
-
-    return browser.storage.local.get(hash).then((cached) => {
-        if (Object.keys(cached).length === 0) throw new Error('not found in localStorage')
-        const entry = cached[hash]
-        if (Date.now() / 1000 > entry.exp) throw new Error('jwt has expired')
-        return entry.jwt
-    })
-}
-
-async function storeLocalStorage(con: AttributeCon, jwt: string) {
-    const decoded = jwtDecode<JwtPayload>(jwt)
-    hashCon(con).then((hash) => {
-        browser.storage.local.set({
-            [hash]: { jwt, exp: decoded.exp },
-        })
-    })
-}
-
-// Retrieve a USK using a JWT and timestamp.
-async function getUSK(jwt: string, ts: number): Promise<unknown> {
-    const url = `${PKG_URL}/v2/irma/key/${ts?.toString()}`
-    return fetch(url, {
-        headers: {
-            Authorization: `Bearer ${jwt}`,
-            ...PG_CLIENT_HEADER,
-        },
-    })
-        .then((r) => r.json())
-        .then((json) => {
-            if (json.status !== 'DONE' || json.proofStatus !== 'VALID')
-                throw new Error('session not DONE and VALID')
-            return json.key
-        })
-}
-
-async function getSigningKeys(jwt: string, keyRequest?: object): Promise<{ pubSignKey: ISigningKey; privSignKey?: ISigningKey }> {
-    const url = `${PKG_URL}/v2/irma/sign/key`
-    return fetch(url, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${jwt}`,
-            ...PG_CLIENT_HEADER,
-            'content-type': 'application/json',
-        },
-        body: JSON.stringify(keyRequest),
-    })
-        .then((r) => r.json())
-        .then((json) => {
-            if (json.status !== 'DONE' || json.proofStatus !== 'VALID')
-                throw new Error('session not DONE and VALID')
-            return { pubSignKey: json.pubSignKey, privSignKey: json.privSignKey }
-        })
-}
-
-async function createSessionPopup(
-    con: AttributeCon,
-    sort: KeySort,
-    hints?: AttributeCon,
-    senderId?: string
-): Promise<string> {
-    const popupWindow = await messenger.windows.create({
-        url: 'decryptPopup.html',
-        type: 'popup',
-        height: 700,
-        width: 620,
-    })
-
-    const popupId = popupWindow.id
-    await messenger.windows.update(popupId, { drawAttention: true, focused: true })
-
-    const data: PopupData = {
-        hostname: PKG_URL,
-        header: PG_CLIENT_HEADER,
-        con,
-        sort,
-        hints,
-        senderId,
-    }
-
-    let popupListener, tabClosedListener
-    const jwtPromise = new Promise<string>((resolve, reject) => {
-        popupListener = (req, sender) => {
-            if (sender.tab.windowId == popupId && req && req.command === 'popup_init') {
-                return Promise.resolve(data)
-            } else if (sender.tab.windowId == popupId && req && req.command === 'popup_done') {
-                if (req.jwt) resolve(req.jwt)
-                else reject(new Error('no jwt'))
-                return Promise.resolve()
-            }
-            return false
-        }
-
-        tabClosedListener = (windowId: number) => {
-            if (windowId === popupId) reject(new Error('tab closed'))
-        }
-        browser.runtime.onMessage.addListener(popupListener)
-        browser.windows.get(popupId).catch((e) => reject(e))
-        browser.windows.onRemoved.addListener(tabClosedListener)
-    })
-
-    return jwtPromise.finally(() => {
-        browser.windows.onRemoved.removeListener(tabClosedListener)
-        browser.runtime.onMessage.removeListener(popupListener)
-    })
-}
-
-// First tries to download the public key from the PKG.
-// If this fails, it falls back to a public key in localStorage.
-// The public key is stored iff there was no public key or it was different.
-// If no public key is found, either through the PKG or localStorage, the promise rejects.
-async function retrievePublicKey(): Promise<string> {
-    const stored = await browser.storage.local.get(PK_KEY)
-    const storedPublicKey = stored[PK_KEY]
-
-    return fetch(`${PKG_URL}/v2/parameters`, {
-        headers: PG_CLIENT_HEADER,
-    })
-        .then((resp) =>
-            resp.json().then(async ({ publicKey }) => {
-                if (storedPublicKey !== publicKey)
-                    await browser.storage.local.set({ [PK_KEY]: publicKey })
-                return publicKey
-            })
-        )
-        .catch((e) => {
-            console.log(
-                `[background]: failed to retrieve public key from PKG: ${e.toString()}, falling back to localStorage`
-            )
-            if (storedPublicKey) return storedPublicKey
-            throw new Error('no public key')
-        })
-}
-
-async function createAttributeSelectionPopup(
-    initialPolicy: Policy,
-    tabId: number,
-    sign: boolean
-): Promise<Policy> {
-    const popupWindow = await messenger.windows.create({
-        url: 'attributeSelection.html',
-        type: 'popup',
-        height: 400,
-        width: 700,
-    })
-
-    const popupId = popupWindow.id
-    composeTabs[tabId].configWindowId = popupId
-
-    await messenger.windows.update(popupId, { drawAttention: true, focused: true })
-
-    let popupListener, tabClosedListener
-    const policyPromise = new Promise<Policy>((resolve, reject) => {
-        popupListener = (req, sender) => {
-            if (sender.tab.windowId == popupId && req && req.command === 'popup_init') {
-                return Promise.resolve({
-                    initialPolicy,
-                    sign,
-                })
-            } else if (sender.tab.windowId == popupId && req && req.command === 'popup_done') {
-                if (req.policy) resolve(req.policy)
-                else reject(new Error('no policy'))
-                return Promise.resolve()
-            }
-            return false
-        }
-
-        tabClosedListener = (windowId: number) => {
-            if (windowId === popupId) reject(new Error('tab closed'))
-        }
-        browser.runtime.onMessage.addListener(popupListener)
-        browser.windows.get(popupId).catch((e) => reject(e))
-        browser.windows.onRemoved.addListener(tabClosedListener)
-    })
-
-    return policyPromise.finally(() => {
-        browser.windows.onRemoved.removeListener(tabClosedListener)
-        browser.runtime.onMessage.removeListener(popupListener)
-        composeTabs[tabId].configWindowId = undefined
-    })
-}
-
-browser.switchbar.onButtonClicked.addListener(async (windowId, notificationId, buttonId) => {
-    if (buttonId === 'postguard-configure' || buttonId === 'postguard-sign') {
-        const sign = buttonId === 'postguard-sign'
-        const tabs = await browser.tabs.query({ windowId, windowType: WIN_TYPE_COMPOSE })
-        const tabId = tabs[0].id
-
-        // Check if a config for this tab is open already.
-        if (
-            (!sign && composeTabs[tabId].configWindowId) ||
-            (sign && composeTabs[tabId].signWindowId)
-        )
-            return
-
-        const state = await browser.compose.getComposeDetails(tabId)
-        const recipients = [...state.to, ...state.cc]
-
-        const start = sign ? [state.from] : recipients
-
-        let policy: Policy = start.reduce((p, next) => {
-            const email = toEmail(next)
-            p[email] = []
-            return p
-        }, {})
-
-        if (!sign && composeTabs[tabId].policy) {
-            // merge
-            for (const [rec, con] of Object.entries(composeTabs[tabId].policy as Policy)) {
-                if (recipients.includes(rec)) policy[rec] = con
-            }
-        }
-
-        if (sign && composeTabs[tabId].signId?.[toEmail(state.from)]) {
-            // start over if sender changed
-            policy = composeTabs[tabId].signId || policy
-        }
-
-        try {
-            const newPolicy: Policy = await createAttributeSelectionPopup(policy, tabId, sign)
-            if (!sign) {
-                composeTabs[tabId].policy = newPolicy
-                const latest = await browser.compose.getComposeDetails(tabId)
-                const newTo = Object.keys(newPolicy)
-                latest.to = newTo
-                await browser.compose.setComposeDetails(tabId, latest)
-            } else {
-                composeTabs[tabId].signId = newPolicy
-
-                if (composeTabs[tabId].notificationId) {
-                    await messenger.notificationbar.clear(composeTabs[tabId].notificationId)
-                }
-
-                composeTabs[tabId].notificationId = await addSignBar(windowId, tabId, 'compose')
-            }
+          const relFull = await browser.messages.getFull(details.relatedMessageId);
+          const relMsgId = relFull.headers["message-id"]?.[0];
+          if (relMsgId) {
+            inReplyTo = relMsgId;
+            const relRefs = relFull.headers["references"]?.[0];
+            references = relRefs ? `${relRefs} ${relMsgId}` : relMsgId;
+          }
         } catch (e) {
-            console.log('failed to get the new policy: ', e)
+          console.warn("[PostGuard] Could not fetch related message headers:", e);
         }
+      }
+
+      // Build inner MIME
+      const mimeData = buildInnerMime({
+        from: details.from,
+        to: [...details.to],
+        cc: [...details.cc],
+        subject: originalSubject,
+        body: details.body,
+        plainTextBody: details.plainTextBody,
+        isPlainText: details.isPlainText,
+        date,
+        inReplyTo,
+        references,
+        attachments: attachmentData,
+      });
+
+      // Build per-recipient policy
+      const customPolicies = state.policy;
+      const recipients = [...details.to, ...details.cc];
+      const sealPolicy: Record<string, { ts: number; con: Array<{ t: string; v: string }> }> = {};
+
+      for (const recipient of recipients) {
+        const id = toEmail(recipient);
+        if (customPolicies && customPolicies[id]) {
+          sealPolicy[id] = {
+            ts: timestamp,
+            con: customPolicies[id].map(({ t, v }) =>
+              t === EMAIL_ATTRIBUTE_TYPE ? { t, v: v.toLowerCase() } : { t, v }
+            ),
+          };
+        } else {
+          sealPolicy[id] = {
+            ts: timestamp,
+            con: [{ t: EMAIL_ATTRIBUTE_TYPE, v: id }],
+          };
+        }
+      }
+
+      // Get signing identity
+      const from = toEmail(details.from);
+      const pubSignId = [{ t: EMAIL_ATTRIBUTE_TYPE, v: from }];
+      const privSignId = state.signId?.[from]?.filter(
+        ({ t }) => t !== EMAIL_ATTRIBUTE_TYPE
+      );
+      const totalId = [...pubSignId, ...(privSignId ?? [])];
+
+      // Get JWT for signing (from cache or Yivi popup)
+      const jwt = await checkLocalJwt(totalId).catch(() =>
+        createYiviPopup(totalId, "Signing")
+      );
+      const { pubSignKey, privSignKey } = await getSigningKeys(jwt, {
+        pubSignId,
+        privSignId,
+      });
+
+      // Seal the message
+      const sealOptions: Parameters<typeof sealData>[1] = {
+        policy: sealPolicy,
+        pubSignKey,
+      };
+      if (privSignKey) sealOptions.privSignKey = privSignKey;
+      const encrypted = await sealData(pk, sealOptions, mimeData);
+
+      // Remove original attachments
+      for (const att of composeAttachments) {
+        await browser.compose.removeAttachment(tab.id, att.id);
+      }
+
+      // Add encrypted attachment
+      const encryptedFile = new File([encrypted as BlobPart], "postguard.encrypted", {
+        type: "application/postguard; charset=utf-8",
+      });
+      await browser.compose.addAttachment(tab.id, { file: encryptedFile });
+
+      // Store JWT for later use
+      await storeLocalJwt(totalId, jwt);
+
+      // Store MIME data for sent copy
+      state.sentMimeData = mimeData;
+
+      // Replace body and subject
+      resolve({
+        details: {
+          subject: POSTGUARD_SUBJECT,
+          body: getPlaceholderHtml(details.from),
+          plainTextBody: getPlaceholderText(details.from),
+        },
+      });
+    } catch (e) {
+      console.error("[PostGuard] Encryption failed:", e);
+      resolve({ cancel: true });
     }
-})
+  })());
+
+  return promise;
+}
+
+async function handleQueryMessageState(tabId: number | undefined) {
+  console.log("[PostGuard] queryMessageState called, tabId:", tabId);
+  if (tabId == null) return null;
+
+  try {
+    const msgList = await browser.messageDisplay.getDisplayedMessages(tabId);
+    const msg = msgList?.messages?.[0];
+    console.log("[PostGuard] Displayed message:", msg?.id, msg?.subject);
+    if (!msg) return null;
+
+    const messageId = msg.id;
+    const isEncrypted = await isPGEncrypted(messageId);
+    const wasEncrypted = isEncrypted
+      ? false
+      : await wasPGEncrypted(messageId);
+    const badges = decryptedMessages.get(messageId)?.badges;
+    console.log("[PostGuard] State result:", { messageId, isEncrypted, wasEncrypted });
+    return { messageId, isEncrypted, wasEncrypted, badges };
+  } catch (e) {
+    console.error("[PostGuard] queryMessageState error:", e);
+    return null;
+  }
+}
+
+async function wasPGEncrypted(msgId: number): Promise<boolean> {
+  const full = await browser.messages.getFull(msgId);
+  return "x-postguard" in full.headers;
+}
+
+async function handleToggleEncryption(tabId: number | undefined) {
+  if (tabId == null) return;
+  const state = composeTabs.get(tabId) ?? { encrypt: false };
+  state.encrypt = !state.encrypt;
+  composeTabs.set(tabId, state);
+  await updateComposeActionIcon(tabId);
+
+  // Set delivery format to "both" when encryption is on
+  const details = await browser.compose.getComposeDetails(tabId);
+  await browser.compose.setComposeDetails(tabId, {
+    deliveryFormat: state.encrypt ? "both" : "auto",
+  } as Partial<typeof details>);
+
+  return { encrypt: state.encrypt };
+}
+
+async function handleGetComposeState(tabId: number | undefined) {
+  if (tabId == null) return { encrypt: false };
+  const state = composeTabs.get(tabId);
+  return { encrypt: state?.encrypt ?? false, policy: state?.policy };
+}
+
+// --- Policy editor flow ---
+
+async function handleOpenPolicyEditor(
+  windowId: number | undefined,
+  sign: boolean
+) {
+  if (windowId == null) return;
+
+  // Find the compose tab in this window
+  const tabs = await browser.tabs.query({
+    windowId,
+    type: "messageCompose",
+  });
+  if (tabs.length === 0) return;
+
+  const tabId = tabs[0].id;
+  const state = composeTabs.get(tabId);
+  if (!state) return;
+
+  // Check if already open
+  if (!sign && state.configWindowId) return;
+  if (sign && state.signWindowId) return;
+
+  // Build initial policy from current recipients
+  const details = await browser.compose.getComposeDetails(tabId);
+  const recipients = sign ? [details.from] : [...details.to, ...details.cc];
+
+  let initialPolicy: Policy = {};
+  for (const r of recipients) {
+    const email = toEmail(r);
+    initialPolicy[email] = [];
+  }
+
+  // Merge existing policy
+  const existingPolicy = sign ? state.signId : state.policy;
+  if (existingPolicy) {
+    for (const [rec, con] of Object.entries(existingPolicy)) {
+      if (rec in initialPolicy) {
+        initialPolicy[rec] = con;
+      }
+    }
+  }
+
+  // Open policy editor popup
+  const popup = await browser.windows.create({
+    url: "pages/policy-editor/policy-editor.html",
+    type: "popup",
+    height: 400,
+    width: 700,
+  });
+
+  const popupId = popup.id;
+  if (sign) {
+    state.signWindowId = popupId;
+  } else {
+    state.configWindowId = popupId;
+  }
+
+  // Store pending editor data
+  const policyPromise = new Promise<Policy>((resolve, reject) => {
+    pendingPolicyEditors.set(popupId, {
+      composeTabId: tabId,
+      initialPolicy,
+      sign,
+      resolve,
+      reject,
+    });
+  });
+
+  // Listen for window close
+  const closeListener = (closedWindowId: number) => {
+    if (closedWindowId === popupId) {
+      const pending = pendingPolicyEditors.get(popupId);
+      if (pending) {
+        pending.reject(new Error("window closed"));
+        pendingPolicyEditors.delete(popupId);
+      }
+      browser.windows.onRemoved.removeListener(closeListener);
+    }
+  };
+  browser.windows.onRemoved.addListener(closeListener);
+
+  try {
+    const newPolicy = await policyPromise;
+    if (sign) {
+      state.signId = newPolicy;
+    } else {
+      state.policy = newPolicy;
+    }
+  } catch {
+    // user cancelled
+  } finally {
+    if (sign) {
+      state.signWindowId = undefined;
+    } else {
+      state.configWindowId = undefined;
+    }
+    browser.windows.onRemoved.removeListener(closeListener);
+  }
+}
+
+async function handlePolicyEditorInit(windowId: number | undefined) {
+  if (windowId == null) return null;
+  const pending = pendingPolicyEditors.get(windowId);
+  if (!pending) return null;
+  return {
+    initialPolicy: pending.initialPolicy,
+    sign: pending.sign,
+  };
+}
+
+async function handlePolicyEditorDone(
+  windowId: number | undefined,
+  policy: Policy
+) {
+  if (windowId == null) return;
+  const pending = pendingPolicyEditors.get(windowId);
+  if (!pending) return;
+
+  pending.resolve(policy);
+  pendingPolicyEditors.delete(windowId);
+  await browser.windows.get(windowId).then(() =>
+    // Close the popup after saving
+    // Use a small delay to let the message response complete
+    setTimeout(() => {
+      try {
+        // Window might already be closed
+      } catch {}
+    }, 100)
+  ).catch(() => {});
+}
+
+// --- Yivi popup flow ---
+
+export async function createYiviPopup(
+  con: AttributeCon,
+  sort: KeySort,
+  hints?: AttributeCon,
+  senderId?: string
+): Promise<string> {
+  const popup = await browser.windows.create({
+    url: "pages/yivi-popup/yivi-popup.html",
+    type: "popup",
+    height: 700,
+    width: 620,
+  });
+
+  const popupId = popup.id;
+  await browser.windows.update(popupId, {
+    drawAttention: true,
+    focused: true,
+  });
+
+  const data: PopupData = {
+    hostname: PKG_URL,
+    header: PG_CLIENT_HEADER,
+    con,
+    sort,
+    hints,
+    senderId,
+  };
+
+  const jwtPromise = new Promise<string>((resolve, reject) => {
+    pendingYiviPopups.set(popupId, { data, resolve, reject });
+  });
+
+  const closeListener = (closedId: number) => {
+    if (closedId === popupId) {
+      const pending = pendingYiviPopups.get(popupId);
+      if (pending) {
+        pending.reject(new Error("Yivi popup closed"));
+        pendingYiviPopups.delete(popupId);
+      }
+      browser.windows.onRemoved.removeListener(closeListener);
+    }
+  };
+  browser.windows.onRemoved.addListener(closeListener);
+
+  return keepAlive(
+    "yivi-session",
+    jwtPromise.finally(() => {
+      browser.windows.onRemoved.removeListener(closeListener);
+    })
+  ) as Promise<string>;
+}
+
+async function handleYiviPopupInit(windowId: number | undefined) {
+  if (windowId == null) return null;
+  const pending = pendingYiviPopups.get(windowId);
+  if (!pending) return null;
+  return pending.data;
+}
+
+async function handleYiviPopupDone(
+  windowId: number | undefined,
+  jwt: string
+) {
+  if (windowId == null) return;
+  const pending = pendingYiviPopups.get(windowId);
+  if (!pending) return;
+
+  pending.resolve(jwt);
+  pendingYiviPopups.delete(windowId);
+}
+
+// --- Decrypt message ---
+
+async function handleDecryptMessage(messageId: number) {
+  console.log("[PostGuard] Decrypt requested for message:", messageId);
+
+  if (!vk || !pgWasm) {
+    console.error("[PostGuard] pg-wasm or verification key not loaded");
+    return;
+  }
+
+  try {
+    const msg = await browser.messages.get(messageId);
+    const attachments = await browser.messages.listAttachments(messageId);
+    const pgAtt = attachments.find((att) => att.name === "postguard.encrypted");
+    if (!pgAtt) return;
+
+    // Get the encrypted attachment
+    const attFile = await browser.messages.getAttachmentFile(
+      messageId,
+      pgAtt.partName
+    );
+
+    // Create unsealer and inspect header
+    const readable = (attFile as any).stream();
+    const unsealer = await pgWasm.StreamUnsealer.new(readable, vk);
+    const recipients = unsealer.inspect_header();
+
+    // Find our identity among the header's recipients.
+    // Check message to/cc addresses against the header's recipient list.
+    const recipientKeys = recipients instanceof Map
+      ? [...recipients.keys()]
+      : Object.keys(recipients);
+    const myAddresses = [...msg.recipients, ...msg.ccList].map(toEmail);
+    const recipientId = myAddresses.find((addr) => recipientKeys.includes(addr));
+
+    if (!recipientId) {
+      console.error("[PostGuard] No matching recipient found. Header:", recipientKeys, "My addresses:", myAddresses);
+      return;
+    }
+
+    const me = recipients instanceof Map
+      ? recipients.get(recipientId)
+      : recipients[recipientId];
+    console.log("[PostGuard] Matched recipient:", recipientId);
+
+    // Prepare hints (what attributes are needed)
+    const hints = me.con.map(({ t, v }: { t: string; v: string }) =>
+      t === EMAIL_ATTRIBUTE_TYPE ? { t, v: recipientId } : { t, v }
+    );
+
+    // Prepare key request (for hidden policy)
+    const keyRequest = {
+      ...me,
+      con: me.con.map(({ t, v }: { t: string; v: string }) => {
+        if (t === EMAIL_ATTRIBUTE_TYPE) return { t, v: recipientId };
+        if (v === "" || v.includes("*")) return { t };
+        return { t, v };
+      }),
+    };
+
+    console.log("[PostGuard] Decrypting with policy:", keyRequest);
+
+    // Get JWT from cache or Yivi popup
+    const jwt = await checkLocalJwt(hints).catch(() =>
+      createYiviPopup(
+        keyRequest.con,
+        "Decryption",
+        hints,
+        toEmail(msg.author)
+      )
+    );
+
+    // Get USK from PKG
+    const usk = await getUSK(jwt, keyRequest.ts);
+
+    // Unseal the message
+    // Need to re-create unsealer since the stream was consumed for header inspection
+    const attFile2 = await browser.messages.getAttachmentFile(
+      messageId,
+      pgAtt.partName
+    );
+    const readable2 = (attFile2 as any).stream();
+    const unsealer2 = await pgWasm.StreamUnsealer.new(readable2, vk);
+
+    let plaintext = "";
+    const decoder = new TextDecoder();
+    const writable = new WritableStream({
+      write(chunk: Uint8Array) {
+        plaintext += decoder.decode(chunk, { stream: true });
+      },
+      close() {
+        plaintext += decoder.decode();
+      },
+    });
+
+    const tStart = performance.now();
+    const senderIdentity = await unsealer2.unseal(recipientId, usk, writable);
+    console.log(
+      `[PostGuard] Decryption took ${(performance.now() - tStart).toFixed(0)}ms`
+    );
+    console.log("[PostGuard] Sender verification:", senderIdentity);
+
+    // Store JWT on success
+    await storeLocalJwt(hints, jwt);
+
+    // Build badges from sender identity
+    const privBadges = senderIdentity?.private?.con ?? [];
+    const badges = [...senderIdentity.public.con, ...privBadges].map(
+      ({ t, v }: { t: string; v: string }) => ({
+        type: typeToImage(t),
+        value: v,
+      })
+    );
+
+    // Inject threading headers from the encrypted envelope so the
+    // decrypted message stays in the correct thread.
+    const envelopeFull = await browser.messages.getFull(messageId);
+    const threadingHeaders: Record<string, string> = {};
+    const threadingRemove: string[] = [];
+    for (const name of ["in-reply-to", "references"] as const) {
+      const val = envelopeFull.headers[name]?.[0];
+      if (val) {
+        const headerName = name === "in-reply-to" ? "In-Reply-To" : "References";
+        threadingHeaders[headerName] = val;
+        threadingRemove.push(headerName);
+      }
+    }
+
+    let markedPlaintext = plaintext;
+    if (Object.keys(threadingHeaders).length > 0) {
+      markedPlaintext = injectMimeHeaders(markedPlaintext, threadingHeaders, threadingRemove);
+    }
+
+    // Inject X-PostGuard header so wasPGEncrypted() recognizes decrypted messages
+    markedPlaintext = injectMimeHeaders(markedPlaintext, { "X-PostGuard": "decrypted" });
+
+    // Import decrypted message directly into the original folder
+    const file = new File([markedPlaintext], "decrypted.eml", {
+      type: "text/plain",
+    });
+    console.log("[PostGuard] Importing to folder:", msg.folder.id);
+    const importedMsg = await (browser.messages as any).import(file, msg.folder.id);
+    const importedMsgId = importedMsg.id;
+    console.log("[PostGuard] Imported decrypted message:", importedMsgId);
+
+    // Track badges for the decrypted message
+    decryptedMessages.set(importedMsgId, { badges });
+
+    // Delete the encrypted original
+    await (browser.messages as any).delete([messageId], true);
+
+    // Select the decrypted message in the current mail tab
+    try {
+      const mailTabs = await browser.mailTabs.query({ active: true, currentWindow: true });
+      if (mailTabs.length > 0) {
+        await browser.mailTabs.setSelectedMessages(mailTabs[0].id, [importedMsgId]);
+      }
+    } catch (e) {
+      console.warn("[PostGuard] Could not select decrypted message:", e);
+    }
+  } catch (e) {
+    console.error("[PostGuard] Decryption failed:", e);
+    if (e instanceof Error && e.name === "OperationError") {
+      console.error("[PostGuard] Wrong attributes for decryption");
+    }
+  }
+}
+
+export { PKG_URL, POSTGUARD_SUBJECT, keepAlive, isPGEncrypted, wasPGEncrypted };
