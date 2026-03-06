@@ -2,8 +2,15 @@ import * as esbuild from "esbuild";
 import { cpSync, mkdirSync, existsSync } from "fs";
 import path from "path";
 
+const isDev = process.argv.includes("--dev");
 const isWatch = process.argv.includes("--watch");
 const outdir = "dist";
+
+// In release builds, strip console.log calls (marked pure so minification
+// removes them since the return value is never used) and minify output.
+const releaseOptions = isDev
+  ? {}
+  : { pure: ["console.log"], minify: true };
 
 // Ensure dist exists
 mkdirSync(outdir, { recursive: true });
@@ -38,6 +45,7 @@ const backgroundBuild = {
   define: {
     "process.env.NODE_ENV": '"production"',
   },
+  ...releaseOptions,
 };
 
 // Message display content script
@@ -48,6 +56,7 @@ const messageDisplayBuild = {
   format: "iife",
   target: "firefox128",
   platform: "browser",
+  ...releaseOptions,
 };
 
 // Message display CSS
@@ -65,6 +74,7 @@ const composePopupBuild = {
   format: "iife",
   target: "firefox128",
   platform: "browser",
+  ...releaseOptions,
 };
 
 // Policy editor popup
@@ -75,6 +85,7 @@ const policyEditorBuild = {
   format: "iife",
   target: "firefox128",
   platform: "browser",
+  ...releaseOptions,
 };
 
 // Yivi popup
@@ -85,6 +96,7 @@ const yiviPopupBuild = {
   format: "iife",
   target: "firefox128",
   platform: "browser",
+  ...releaseOptions,
 };
 
 const builds = [

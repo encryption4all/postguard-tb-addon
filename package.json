@@ -5,7 +5,8 @@
   "description": "PostGuard encryption extension for Thunderbird",
   "scripts": {
     "build": "node build.mjs",
-    "watch": "node build.mjs --watch",
+    "build:dev": "node build.mjs --dev",
+    "watch": "node build.mjs --dev --watch",
     "clean": "rm -rf dist"
   },
   "devDependencies": {
