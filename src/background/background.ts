@@ -14,6 +14,7 @@ import { buildInnerMime, injectMimeHeaders } from "../lib/mime-builder";
 import { getPlaceholderHtml, getPlaceholderText } from "../lib/placeholder";
 import { sealData, setSealStream } from "../lib/encryption";
 import { setStreamUnsealer } from "../lib/decryption";
+import { findHtmlBody, extractArmoredPayload } from "../lib/utils";
 import { getUSK } from "../lib/pkg-client";
 import { typeToImage } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
@@ -278,8 +279,20 @@ async function shouldEncrypt(tabId: number): Promise<boolean> {
 }
 
 async function isPGEncrypted(msgId: number): Promise<boolean> {
+  // Primary: check for encrypted attachment
   const attachments = await browser.messages.listAttachments(msgId);
-  return attachments.some((att) => att.name === "postguard.encrypted");
+  if (attachments.some((att) => att.name === "postguard.encrypted")) return true;
+
+  // Fallback: check for armor block in HTML body
+  try {
+    const full = await browser.messages.getFull(msgId);
+    const bodyHtml = findHtmlBody(full);
+    if (bodyHtml && extractArmoredPayload(bodyHtml)) return true;
+  } catch {
+    // ignore
+  }
+
+  return false;
 }
 
 // --- Alarm keepalive for onBeforeSend (MV3 anti-termination pattern) ---
@@ -444,11 +457,18 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       // Store MIME data for sent copy
       state.sentMimeData = mimeData;
 
+      // Build body with armor block + fallback URL
+      const base64Encrypted = btoa(
+        Array.from(new Uint8Array(encrypted as ArrayBuffer), (b) =>
+          String.fromCharCode(b)
+        ).join("")
+      );
+
       // Replace body and subject
       resolve({
         details: {
           subject: POSTGUARD_SUBJECT,
-          body: getPlaceholderHtml(details.from),
+          body: getPlaceholderHtml(details.from, base64Encrypted),
           plainTextBody: getPlaceholderText(details.from),
         },
       });
@@ -731,16 +751,44 @@ async function handleDecryptMessage(messageId: number) {
     const msg = await browser.messages.get(messageId);
     const attachments = await browser.messages.listAttachments(messageId);
     const pgAtt = attachments.find((att) => att.name === "postguard.encrypted");
-    if (!pgAtt) return;
 
-    // Get the encrypted attachment
-    const attFile = await browser.messages.getAttachmentFile(
-      messageId,
-      pgAtt.partName
-    );
+    let createReadable: () => Promise<ReadableStream<Uint8Array>>;
+
+    if (pgAtt) {
+      // Primary: decrypt from attachment
+      createReadable = async () => {
+        const attFile = await browser.messages.getAttachmentFile(
+          messageId,
+          pgAtt.partName
+        );
+        return (attFile as any).stream();
+      };
+    } else {
+      // Fallback: extract armored payload from body
+      const full = await browser.messages.getFull(messageId);
+      const bodyHtml = findHtmlBody(full);
+      if (!bodyHtml) return;
+
+      const armoredBase64 = extractArmoredPayload(bodyHtml);
+      if (!armoredBase64) return;
+
+      console.log("[PostGuard] Found armored payload in body, length:", armoredBase64.length);
+      const binaryString = atob(armoredBase64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      createReadable = async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        });
+    }
 
     // Create unsealer and inspect header
-    const readable = (attFile as any).stream();
+    const readable = await createReadable();
     const unsealer = await pgWasm.StreamUnsealer.new(readable, vk);
     const recipients = unsealer.inspect_header();
 
@@ -794,11 +842,7 @@ async function handleDecryptMessage(messageId: number) {
 
     // Unseal the message
     // Need to re-create unsealer since the stream was consumed for header inspection
-    const attFile2 = await browser.messages.getAttachmentFile(
-      messageId,
-      pgAtt.partName
-    );
-    const readable2 = (attFile2 as any).stream();
+    const readable2 = await createReadable();
     const unsealer2 = await pgWasm.StreamUnsealer.new(readable2, vk);
 
     let plaintext = "";

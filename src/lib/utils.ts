@@ -53,3 +53,45 @@ export function typeToImage(t: string): string {
 }
 
 export const EMAIL_ATTRIBUTE_TYPE = "pbdf.sidn-pbdf.email.email";
+
+// ─── Armor & URL helpers ───────────────────────────────────────────
+
+export const PG_ARMOR_BEGIN = "-----BEGIN POSTGUARD MESSAGE-----";
+export const PG_ARMOR_END = "-----END POSTGUARD MESSAGE-----";
+export const PG_ARMOR_DIV_ID = "postguard-armor";
+export const POSTGUARD_WEBSITE_URL = "https://postguard.eu";
+export const PG_MAX_URL_FRAGMENT_SIZE = 100_000;
+
+export function armorBase64(base64: string): string {
+  const lines: string[] = [];
+  for (let i = 0; i < base64.length; i += 76) {
+    lines.push(base64.substring(i, i + 76));
+  }
+  return `${PG_ARMOR_BEGIN}\n${lines.join("\n")}\n${PG_ARMOR_END}`;
+}
+
+export function extractArmoredPayload(html: string): string | null {
+  const regex = new RegExp(
+    PG_ARMOR_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+      "\\s*([A-Za-z0-9+/=\\s]+?)\\s*" +
+      PG_ARMOR_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  );
+  const match = html.match(regex);
+  if (!match) return null;
+  return match[1].replace(/\s/g, "");
+}
+
+export function toUrlSafeBase64(base64: string): string {
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function findHtmlBody(part: { contentType?: string; body?: string; parts?: any[] }): string | null {
+  if (part.contentType === "text/html" && part.body) return part.body;
+  if (part.parts) {
+    for (const sub of part.parts) {
+      const found = findHtmlBody(sub);
+      if (found) return found;
+    }
+  }
+  return null;
+}

@@ -1,7 +1,18 @@
 // Placeholder body for the encrypted email envelope
 // This is what recipients see if their client doesn't support PostGuard
 
-export function getPlaceholderHtml(from: string): string {
+import {
+  armorBase64,
+  toUrlSafeBase64,
+  PG_ARMOR_DIV_ID,
+  POSTGUARD_WEBSITE_URL,
+  PG_MAX_URL_FRAGMENT_SIZE,
+} from "./utils";
+
+export function getPlaceholderHtml(from: string, base64Encrypted?: string): string {
+  const fallbackLink = base64Encrypted ? buildFallbackLink(base64Encrypted) : "";
+  const armorDiv = base64Encrypted ? buildArmorDiv(base64Encrypted) : "";
+
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
@@ -14,8 +25,8 @@ export function getPlaceholderHtml(from: string): string {
     <p style="color: #6b7280; font-size: 14px;">
       To decrypt this message, you need the PostGuard extension for Thunderbird.
       Visit <a href="https://postguard.eu" style="color: #006EF4;">postguard.eu</a> for more information.
-    </p>
-  </div>
+    </p>${fallbackLink}
+  </div>${armorDiv}
 </body>
 </html>`;
 }
@@ -26,6 +37,28 @@ export function getPlaceholderText(from: string): string {
 This email from ${from} is encrypted using PostGuard.
 To decrypt this message, you need the PostGuard extension for Thunderbird.
 Visit https://postguard.eu for more information.`;
+}
+
+function buildFallbackLink(base64Encrypted: string): string {
+  if (base64Encrypted.length <= PG_MAX_URL_FRAGMENT_SIZE) {
+    const urlSafe = toUrlSafeBase64(base64Encrypted);
+    const fallbackUrl = `${POSTGUARD_WEBSITE_URL}/decrypt#${urlSafe}`;
+    return `
+    <p style="color: #6b7280; font-size: 14px; margin-top: 16px;">
+      Or <a href="${fallbackUrl}" style="color: #006EF4;">decrypt in your browser</a>
+      without installing any add-on.
+    </p>`;
+  }
+  return `
+    <p style="color: #6b7280; font-size: 14px; margin-top: 16px;">
+      Or decrypt in your browser via
+      <a href="${POSTGUARD_WEBSITE_URL}/decrypt" style="color: #006EF4;">postguard.eu/decrypt</a>.
+      Upload the attached <code>postguard.encrypted</code> file on that page.
+    </p>`;
+}
+
+function buildArmorDiv(base64Encrypted: string): string {
+  return `\n  <div id="${PG_ARMOR_DIV_ID}" style="display:none;font-size:0;max-height:0;overflow:hidden;mso-hide:all">${armorBase64(base64Encrypted)}</div>`;
 }
 
 function escapeHtml(str: string): string {
