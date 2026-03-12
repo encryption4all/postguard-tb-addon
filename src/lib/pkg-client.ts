@@ -1,6 +1,6 @@
 import type { AttributeCon, SessionStartResult } from "./types";
 
-const PKG_URL = "https://postguard-main.cs.ru.nl/pkg";
+const PKG_URL = process.env.PKG_URL;
 const PK_STORAGE_KEY = "pg-pk";
 
 let clientHeader: Record<string, string> = {};

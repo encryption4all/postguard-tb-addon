@@ -59,7 +59,7 @@ export const EMAIL_ATTRIBUTE_TYPE = "pbdf.sidn-pbdf.email.email";
 export const PG_ARMOR_BEGIN = "-----BEGIN POSTGUARD MESSAGE-----";
 export const PG_ARMOR_END = "-----END POSTGUARD MESSAGE-----";
 export const PG_ARMOR_DIV_ID = "postguard-armor";
-export const POSTGUARD_WEBSITE_URL = "https://postguard.eu";
+export const POSTGUARD_WEBSITE_URL = process.env.POSTGUARD_WEBSITE_URL;
 export const PG_MAX_URL_FRAGMENT_SIZE = 100_000;
 
 export function armorBase64(base64: string): string {
