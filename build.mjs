@@ -32,8 +32,8 @@ const env = loadEnv();
 // Build-time environment variables with defaults
 const envDefine = {
   "process.env.NODE_ENV": '"production"',
-  "process.env.PKG_URL": JSON.stringify(env.PKG_URL || "https://postguard-main.cs.ru.nl/pkg"),
-  "process.env.POSTGUARD_WEBSITE_URL": JSON.stringify(env.POSTGUARD_WEBSITE_URL || "https://postguard.eu"),
+  "process.env.PKG_URL": JSON.stringify(env.PKG_URL || "https://postguard.staging.yivi.app/pkg"),
+  "process.env.POSTGUARD_WEBSITE_URL": JSON.stringify(env.POSTGUARD_WEBSITE_URL || "https://postguard.staging.yivi.app"),
 };
 
 // In release builds, strip console.log calls (marked pure so minification
