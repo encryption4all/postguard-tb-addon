@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PostGuard — Manage Access</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 20px 24px;
+      background: #fff;
+      color: #022E3D;
+      min-width: 600px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid #022E3D;
+    }
+    .header img { width: 32px; height: 32px; }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .recipient-section {
+      margin-bottom: 20px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .recipient-email {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #022E3D;
+    }
+    .attr-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .attr-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.15s;
+    }
+    .attr-item:hover { border-color: #006EF4; }
+    .attr-item.selected {
+      border-color: #006EF4;
+      background: #EBF5FF;
+    }
+    .attr-item input[type="checkbox"] {
+      accent-color: #006EF4;
+    }
+    .attr-value {
+      flex: 1;
+    }
+    .attr-value input {
+      width: 100%;
+      border: 1px solid #d1d5db;
+      border-radius: 4px;
+      padding: 3px 6px;
+      font-size: 12px;
+      display: none;
+    }
+    .attr-item.selected .attr-value input {
+      display: block;
+    }
+    .footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 20px;
+      padding-top: 12px;
+      border-top: 1px solid #e5e7eb;
+    }
+    .btn {
+      padding: 8px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: #006EF4;
+      color: #fff;
+      border: none;
+    }
+    .btn-primary:hover { background: #0059c7; }
+    .btn-secondary {
+      background: #fff;
+      color: #022E3D;
+      border: 1px solid #d1d5db;
+    }
+    .btn-secondary:hover { background: #f3f4f6; }
+    .empty-state {
+      padding: 40px;
+      text-align: center;
+      color: #6b7280;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="../../icons/icon-64.svg" alt="PostGuard">
+    <h1 id="page-title">PostGuard — Manage Access</h1>
+  </div>
+  <div id="recipients-container">
+    <div class="empty-state">Loading recipients...</div>
+  </div>
+  <div class="footer">
+    <button class="btn btn-secondary" id="btn-cancel">Cancel</button>
+    <button class="btn btn-primary" id="btn-save">Save</button>
+  </div>
+  <script src="policy-editor.js"></script>
+</body>
+</html>
