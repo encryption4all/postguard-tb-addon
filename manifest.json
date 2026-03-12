@@ -28,7 +28,8 @@
     "accountsFolders",
     "storage",
     "scripting",
-    "alarms"
+    "alarms",
+    "notifications"
   ],
   "icons": {
     "64": "icons/icon-64.svg",

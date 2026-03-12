@@ -27,6 +27,14 @@ import type { Policy, AttributeCon, KeySort, PopupData } from "../lib/types";
 
 const POSTGUARD_SUBJECT = "PostGuard Encrypted Email";
 
+function notifyError(messageKey: string) {
+  browser.notifications.create({
+    type: "basic",
+    title: "PostGuard",
+    message: browser.i18n.getMessage(messageKey),
+  });
+}
+
 const { version: tbVersion } = await browser.runtime.getBrowserInfo();
 const extVersion = browser.runtime.getManifest().version;
 
@@ -226,6 +234,10 @@ vk = _vk as string | null;
 if (pk) console.log("[PostGuard] Master public key loaded");
 if (vk) console.log("[PostGuard] Verification key loaded");
 
+if (!pgWasm || !pk || !vk) {
+  notifyError("startupError");
+}
+
 // --- Compose Action: toggle encryption per tab ---
 
 async function updateComposeActionIcon(tabId: number) {
@@ -335,6 +347,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
 
   if (!pk) {
     console.error("[PostGuard] No public key available, cannot encrypt");
+    notifyError("encryptionError");
     return { cancel: true };
   }
 
@@ -474,6 +487,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       });
     } catch (e) {
       console.error("[PostGuard] Encryption failed:", e);
+      notifyError("encryptionError");
       resolve({ cancel: true });
     }
   })());
@@ -923,9 +937,7 @@ async function handleDecryptMessage(messageId: number) {
     }
   } catch (e) {
     console.error("[PostGuard] Decryption failed:", e);
-    if (e instanceof Error && e.name === "OperationError") {
-      console.error("[PostGuard] Wrong attributes for decryption");
-    }
+    notifyError("decryptionError");
   }
 }
 

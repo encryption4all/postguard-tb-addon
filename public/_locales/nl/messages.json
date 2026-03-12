@@ -112,5 +112,8 @@
   },
   "networkError": {
     "message": "Kan geen verbinding maken met de PostGuard server. Controleer je netwerkverbinding."
+  },
+  "startupError": {
+    "message": "PostGuard kon niet worden gestart. Versleuteling en ontsleuteling werken niet totdat het probleem is opgelost."
   }
 }

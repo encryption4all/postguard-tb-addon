@@ -112,5 +112,8 @@
   },
   "networkError": {
     "message": "Could not connect to PostGuard server. Check your network connection."
+  },
+  "startupError": {
+    "message": "PostGuard failed to initialize. Encryption and decryption will not work until the issue is resolved."
   }
 }
