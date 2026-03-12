@@ -753,12 +753,13 @@ async function handleYiviPopupDone(
 
 // --- Decrypt message ---
 
-async function handleDecryptMessage(messageId: number) {
+async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; error?: string }> {
   console.log("[PostGuard] Decrypt requested for message:", messageId);
 
   if (!vk || !pgWasm) {
     console.error("[PostGuard] pg-wasm or verification key not loaded");
-    return;
+    notifyError("startupError");
+    return { ok: false, error: "startupError" };
   }
 
   try {
@@ -935,13 +936,15 @@ async function handleDecryptMessage(messageId: number) {
     } catch (e) {
       console.warn("[PostGuard] Could not select decrypted message:", e);
     }
+
+    return { ok: true };
   } catch (e) {
     console.error("[PostGuard] Decryption failed:", e);
-    if (e instanceof Error && e.message.includes("KEM error")) {
-      notifyError("decryptionFailed");
-    } else {
-      notifyError("decryptionError");
-    }
+    const errorKey = e instanceof Error && e.message.includes("KEM error")
+      ? "decryptionFailed"
+      : "decryptionError";
+    notifyError(errorKey);
+    return { ok: false, error: errorKey };
   }
 }
 
