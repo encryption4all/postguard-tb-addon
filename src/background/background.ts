@@ -1,4 +1,3 @@
-import { ComposeMail } from '@e4a/irmaseal-mail-utils'
 import {
     toEmail,
     hashCon,
@@ -7,6 +6,8 @@ import {
     wasPGEncrypted,
     getLocalFolder,
     type_to_image,
+    buildEncryptedBody,
+    extractArmoredPayload,
 } from './../utils'
 import jwtDecode, { JwtPayload } from 'jwt-decode'
 import { ISealOptions, ISigningKey } from '@e4a/pg-wasm'
@@ -371,15 +372,16 @@ browser.compose.onBeforeSend.addListener(async (tab, details) => {
     // Add the encrypted file attachment
     await browser.compose.addAttachment(tab.id, { file: encryptedFile })
 
-    const compose = new ComposeMail()
-    compose.setSender(details.from)
+    // Build body with armor block + fallback URL
+    const base64Encrypted = Buffer.from(encrypted).toString('base64')
+    const encryptedBody = buildEncryptedBody(details.from, base64Encrypted)
 
     // This doesn't work in onBeforeSend due to a bug, hence we set this
     // when the PostGuard switch is turned on (see messenger.switchbar.onButtonClicked.addListener).
     // details.deliveryFormat = 'both'
 
-    details.plainTextBody = compose.getPlainText()
-    details.body = compose.getHtmlText()
+    details.plainTextBody = 'This email is encrypted with PostGuard. Open it in a PostGuard-compatible client or visit https://postguard.eu/decrypt'
+    details.body = encryptedBody
 
     // Save a copy of the message in the sent folder.
     // 1) Import copy to local sent folder
@@ -472,13 +474,38 @@ async function decryptMessage(msgId: number) {
 
     const attachments = await browser.messages.listAttachments(msg.id)
     const filtered = attachments.filter((att) => att.name === 'postguard.encrypted')
-    if (filtered.length !== 1) return
 
-    const pgPartName = filtered[0].partName
+    let readable: ReadableStream<Uint8Array>
+
+    if (filtered.length === 1) {
+        // Primary: decrypt from attachment
+        const pgPartName = filtered[0].partName
+        const attFile = await browser.messages.getAttachmentFile(msg.id, pgPartName)
+        readable = attFile.stream()
+    } else {
+        // Fallback: extract armored payload from body
+        const full = await browser.messages.getFull(msgId)
+        const bodyHtml = extractBodyHtml(full)
+        if (!bodyHtml) return
+
+        const armoredBase64 = extractArmoredPayload(bodyHtml)
+        if (!armoredBase64) return
+
+        console.log('[PostGuard] Found armored payload in body, length:', armoredBase64.length)
+        const binaryString = atob(armoredBase64)
+        const bytes = new Uint8Array(binaryString.length)
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i)
+        }
+        readable = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(bytes)
+                controller.close()
+            },
+        })
+    }
 
     try {
-        const attFile = await browser.messages.getAttachmentFile(msg.id, pgPartName)
-        const readable = attFile.stream()
         const unsealer = await mod.StreamUnsealer.new(readable, vk)
         const accountId = msg.folder.accountId
         const defaultIdentity = await browser.identities.getDefault(accountId)
@@ -613,6 +640,18 @@ async function decryptMessage(msgId: number) {
         if (e instanceof Error && e.name === 'RecipientUnknownError')
             await notifyDecryptionFailed(i18n('recipientUnknown'))
     }
+}
+
+// Recursively extract HTML body from a MIME message part tree.
+function extractBodyHtml(part: any): string | null {
+    if (part.contentType === 'text/html' && part.body) return part.body
+    if (part.parts) {
+        for (const sub of part.parts) {
+            const found = extractBodyHtml(sub)
+            if (found) return found
+        }
+    }
+    return null
 }
 
 // Cleans up the local storage.

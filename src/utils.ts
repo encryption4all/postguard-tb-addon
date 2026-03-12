@@ -1,3 +1,5 @@
+import { ComposeMail } from '@e4a/irmaseal-mail-utils'
+
 // Converts a Thunderbird email account identity to an email address
 export function toEmail(identity: string): string {
     const regex = /^(.*)<(.*)>$/
@@ -56,14 +58,121 @@ export async function getLocalFolder(folderName: string) {
 }
 
 export async function isPGEncrypted(msgId: number): Promise<boolean> {
+    // Check attachment first
     const attachments = await browser.messages.listAttachments(msgId)
     const filtered = attachments.filter((att) => att.name === 'postguard.encrypted')
-    return filtered.length === 1
+    if (filtered.length === 1) return true
+
+    // Fallback: check for armor in body
+    try {
+        const full = await browser.messages.getFull(msgId)
+        const bodyHtml = findHtmlBody(full)
+        if (bodyHtml && extractArmoredPayload(bodyHtml)) return true
+    } catch {
+        // ignore
+    }
+
+    return false
+}
+
+function findHtmlBody(part: any): string | null {
+    if (part.contentType === 'text/html' && part.body) return part.body
+    if (part.parts) {
+        for (const sub of part.parts) {
+            const found = findHtmlBody(sub)
+            if (found) return found
+        }
+    }
+    return null
 }
 
 export async function wasPGEncrypted(msgId: number): Promise<boolean> {
     const full = await browser.messages.getFull(msgId)
     return 'x-postguard' in full.headers
+}
+
+// ─── Armor & URL helpers ───────────────────────────────────────────
+
+export const PG_ARMOR_BEGIN = '-----BEGIN POSTGUARD MESSAGE-----'
+export const PG_ARMOR_END = '-----END POSTGUARD MESSAGE-----'
+export const PG_ARMOR_DIV_ID = 'postguard-armor'
+export const POSTGUARD_WEBSITE_URL = 'https://postguard.eu'
+export const PG_MAX_URL_FRAGMENT_SIZE = 100_000
+
+export function armorBase64(base64: string): string {
+    const lines: string[] = []
+    for (let i = 0; i < base64.length; i += 76) {
+        lines.push(base64.substring(i, i + 76))
+    }
+    return `${PG_ARMOR_BEGIN}\n${lines.join('\n')}\n${PG_ARMOR_END}`
+}
+
+export function extractArmoredPayload(html: string): string | null {
+    const regex = new RegExp(
+        PG_ARMOR_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+            '\\s*([A-Za-z0-9+/=\\s]+?)\\s*' +
+            PG_ARMOR_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    )
+    const match = html.match(regex)
+    if (!match) return null
+    return match[1].replace(/\s/g, '')
+}
+
+export function toUrlSafeBase64(base64: string): string {
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+export function buildEncryptedBody(senderHtml: string, base64Encrypted: string): string {
+    const compose = new ComposeMail()
+    compose.setSender(senderHtml)
+    let html = compose.getHtmlText()
+
+    let fallbackLinkHtml: string
+    if (base64Encrypted.length <= PG_MAX_URL_FRAGMENT_SIZE) {
+        const urlSafe = toUrlSafeBase64(base64Encrypted)
+        const fallbackUrl = `${POSTGUARD_WEBSITE_URL}/decrypt#${urlSafe}`
+        fallbackLinkHtml =
+            `<div class="outer">` +
+            `<div class="numberCounter">3</div>` +
+            `<div style="margin-left: 34px">` +
+            `Or <a href="${fallbackUrl}">decrypt in your browser</a> ` +
+            `without installing any add-on.` +
+            `</div></div>`
+    } else {
+        fallbackLinkHtml =
+            `<div class="outer">` +
+            `<div class="numberCounter">3</div>` +
+            `<div style="margin-left: 34px">` +
+            `Or decrypt in your browser via ` +
+            `<a href="${POSTGUARD_WEBSITE_URL}/decrypt">postguard.eu/decrypt</a>. ` +
+            `Upload the attached <code>postguard.encrypted</code> file on that page.` +
+            `</div></div>`
+    }
+
+    const armorDiv =
+        `<div id="${PG_ARMOR_DIV_ID}" style="display:none;font-size:0;max-height:0;overflow:hidden;mso-hide:all">` +
+        armorBase64(base64Encrypted) +
+        `</div>`
+
+    const whatIsPostguardMarker = 'What is PostGuard?'
+    const markerIndex = html.indexOf(whatIsPostguardMarker)
+    if (markerIndex !== -1) {
+        const beforeMarker = html.substring(0, markerIndex)
+        const lastOuterDiv = beforeMarker.lastIndexOf(`<div style="`)
+        if (lastOuterDiv !== -1) {
+            const insertionPoint = beforeMarker.lastIndexOf('</div>', lastOuterDiv)
+            if (insertionPoint !== -1) {
+                html =
+                    html.substring(0, insertionPoint) +
+                    fallbackLinkHtml +
+                    html.substring(insertionPoint)
+            }
+        }
+    }
+
+    html = html.replace('</body>', armorDiv + '</body>')
+
+    return html
 }
 
 // If hours <  4: seconds till 4 AM today.
