@@ -937,7 +937,11 @@ async function handleDecryptMessage(messageId: number) {
     }
   } catch (e) {
     console.error("[PostGuard] Decryption failed:", e);
-    notifyError("decryptionError");
+    if (e instanceof Error && e.message.includes("KEM error")) {
+      notifyError("decryptionFailed");
+    } else {
+      notifyError("decryptionError");
+    }
   }
 }
 
