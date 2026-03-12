@@ -27,7 +27,7 @@
     "message": "PostGuard ondersteunt BCC niet. Verwijder het BCC veld of zet PostGuard uit."
   },
   "decryptionFailed": {
-    "message": "Je hebt niet de juiste attributen om deze mail te ontsleutelen."
+    "message": "Ontsleuteling mislukt: de vrijgegeven attributen komen niet overeen. Controleer of je het juiste e-mailadres verifieert in je Yivi-app."
   },
   "recipientUnknown": {
     "message": "Deze email was niet versleuteld voor het mail adres waarop het ontvangen is."

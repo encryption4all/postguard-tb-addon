@@ -27,7 +27,7 @@
     "message": "PostGuard does not support BCC. Either remove BCC or disable PostGuard."
   },
   "decryptionFailed": {
-    "message": "You did not have the correct attributes to decrypt this message."
+    "message": "Decryption failed: the disclosed attributes did not match. Make sure you verify the correct email address in your Yivi app."
   },
   "recipientUnknown": {
     "message": "This message was not encrypted for the mail account it was received on."
