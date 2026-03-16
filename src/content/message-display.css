@@ -16,6 +16,13 @@
 
 .postguard-banner--error {
   background-color: #A63232;
+  flex-wrap: wrap;
+}
+
+.postguard-banner__error {
+  width: 100%;
+  font-size: 12px;
+  opacity: 0.9;
 }
 
 .postguard-banner__icon {

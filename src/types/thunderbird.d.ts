@@ -212,7 +212,25 @@ declare namespace browser {
   namespace mailTabs {
     function setSelectedMessages(messageIds: number[]): Promise<void>;
   }
+
+  namespace notifications {
+    function create(options: {
+      type: string;
+      title: string;
+      message: string;
+      iconUrl?: string;
+    }): Promise<string>;
+  }
 }
 
 // messenger is an alias for browser in Thunderbird
 declare const messenger: typeof browser;
+
+// Build-time environment variables replaced by esbuild define
+declare namespace process {
+  const env: {
+    NODE_ENV: string;
+    PKG_URL: string;
+    POSTGUARD_WEBSITE_URL: string;
+  };
+}

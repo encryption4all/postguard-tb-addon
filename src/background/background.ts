@@ -14,6 +14,7 @@ import { buildInnerMime, injectMimeHeaders } from "../lib/mime-builder";
 import { getPlaceholderHtml, getPlaceholderText } from "../lib/placeholder";
 import { sealData, setSealStream } from "../lib/encryption";
 import { setStreamUnsealer } from "../lib/decryption";
+import { findHtmlBody, extractArmoredPayload } from "../lib/utils";
 import { getUSK } from "../lib/pkg-client";
 import { typeToImage } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
@@ -25,6 +26,14 @@ import {
 import type { Policy, AttributeCon, KeySort, PopupData } from "../lib/types";
 
 const POSTGUARD_SUBJECT = "PostGuard Encrypted Email";
+
+function notifyError(messageKey: string) {
+  browser.notifications.create({
+    type: "basic",
+    title: "PostGuard",
+    message: browser.i18n.getMessage(messageKey),
+  });
+}
 
 const { version: tbVersion } = await browser.runtime.getBrowserInfo();
 const extVersion = browser.runtime.getManifest().version;
@@ -225,6 +234,10 @@ vk = _vk as string | null;
 if (pk) console.log("[PostGuard] Master public key loaded");
 if (vk) console.log("[PostGuard] Verification key loaded");
 
+if (!pgWasm || !pk || !vk) {
+  notifyError("startupError");
+}
+
 // --- Compose Action: toggle encryption per tab ---
 
 async function updateComposeActionIcon(tabId: number) {
@@ -278,8 +291,20 @@ async function shouldEncrypt(tabId: number): Promise<boolean> {
 }
 
 async function isPGEncrypted(msgId: number): Promise<boolean> {
+  // Primary: check for encrypted attachment
   const attachments = await browser.messages.listAttachments(msgId);
-  return attachments.some((att) => att.name === "postguard.encrypted");
+  if (attachments.some((att) => att.name === "postguard.encrypted")) return true;
+
+  // Fallback: check for armor block in HTML body
+  try {
+    const full = await browser.messages.getFull(msgId);
+    const bodyHtml = findHtmlBody(full);
+    if (bodyHtml && extractArmoredPayload(bodyHtml)) return true;
+  } catch {
+    // ignore
+  }
+
+  return false;
 }
 
 // --- Alarm keepalive for onBeforeSend (MV3 anti-termination pattern) ---
@@ -322,6 +347,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
 
   if (!pk) {
     console.error("[PostGuard] No public key available, cannot encrypt");
+    notifyError("encryptionError");
     return { cancel: true };
   }
 
@@ -444,16 +470,24 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       // Store MIME data for sent copy
       state.sentMimeData = mimeData;
 
+      // Build body with armor block + fallback URL
+      const base64Encrypted = btoa(
+        Array.from(new Uint8Array(encrypted as ArrayBuffer), (b) =>
+          String.fromCharCode(b)
+        ).join("")
+      );
+
       // Replace body and subject
       resolve({
         details: {
           subject: POSTGUARD_SUBJECT,
-          body: getPlaceholderHtml(details.from),
+          body: getPlaceholderHtml(details.from, base64Encrypted),
           plainTextBody: getPlaceholderText(details.from),
         },
       });
     } catch (e) {
       console.error("[PostGuard] Encryption failed:", e);
+      notifyError("encryptionError");
       resolve({ cancel: true });
     }
   })());
@@ -719,28 +753,57 @@ async function handleYiviPopupDone(
 
 // --- Decrypt message ---
 
-async function handleDecryptMessage(messageId: number) {
+async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; error?: string }> {
   console.log("[PostGuard] Decrypt requested for message:", messageId);
 
   if (!vk || !pgWasm) {
     console.error("[PostGuard] pg-wasm or verification key not loaded");
-    return;
+    notifyError("startupError");
+    return { ok: false, error: "startupError" };
   }
 
   try {
     const msg = await browser.messages.get(messageId);
     const attachments = await browser.messages.listAttachments(messageId);
     const pgAtt = attachments.find((att) => att.name === "postguard.encrypted");
-    if (!pgAtt) return;
 
-    // Get the encrypted attachment
-    const attFile = await browser.messages.getAttachmentFile(
-      messageId,
-      pgAtt.partName
-    );
+    let createReadable: () => Promise<ReadableStream<Uint8Array>>;
+
+    if (pgAtt) {
+      // Primary: decrypt from attachment
+      createReadable = async () => {
+        const attFile = await browser.messages.getAttachmentFile(
+          messageId,
+          pgAtt.partName
+        );
+        return (attFile as any).stream();
+      };
+    } else {
+      // Fallback: extract armored payload from body
+      const full = await browser.messages.getFull(messageId);
+      const bodyHtml = findHtmlBody(full);
+      if (!bodyHtml) return;
+
+      const armoredBase64 = extractArmoredPayload(bodyHtml);
+      if (!armoredBase64) return;
+
+      console.log("[PostGuard] Found armored payload in body, length:", armoredBase64.length);
+      const binaryString = atob(armoredBase64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      createReadable = async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        });
+    }
 
     // Create unsealer and inspect header
-    const readable = (attFile as any).stream();
+    const readable = await createReadable();
     const unsealer = await pgWasm.StreamUnsealer.new(readable, vk);
     const recipients = unsealer.inspect_header();
 
@@ -794,11 +857,7 @@ async function handleDecryptMessage(messageId: number) {
 
     // Unseal the message
     // Need to re-create unsealer since the stream was consumed for header inspection
-    const attFile2 = await browser.messages.getAttachmentFile(
-      messageId,
-      pgAtt.partName
-    );
-    const readable2 = (attFile2 as any).stream();
+    const readable2 = await createReadable();
     const unsealer2 = await pgWasm.StreamUnsealer.new(readable2, vk);
 
     let plaintext = "";
@@ -877,11 +936,15 @@ async function handleDecryptMessage(messageId: number) {
     } catch (e) {
       console.warn("[PostGuard] Could not select decrypted message:", e);
     }
+
+    return { ok: true };
   } catch (e) {
     console.error("[PostGuard] Decryption failed:", e);
-    if (e instanceof Error && e.name === "OperationError") {
-      console.error("[PostGuard] Wrong attributes for decryption");
-    }
+    const errorKey = e instanceof Error && e.message.includes("KEM error")
+      ? "decryptionFailed"
+      : "decryptionError";
+    notifyError(errorKey);
+    return { ok: false, error: errorKey };
   }
 }
 

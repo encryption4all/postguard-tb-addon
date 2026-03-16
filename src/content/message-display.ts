@@ -56,13 +56,27 @@ function createBanner(text: string, buttonLabel: string, messageId: number) {
   const btn = document.createElement("button");
   btn.className = "postguard-banner__btn";
   btn.textContent = buttonLabel;
-  btn.addEventListener("click", () => {
+  btn.addEventListener("click", async () => {
     btn.disabled = true;
-    btn.textContent = "Decrypting...";
-    browser.runtime.sendMessage({
-      type: "decryptMessage",
-      messageId,
-    });
+    btn.textContent = browser.i18n.getMessage("decryptingButton") || "Decrypting...";
+    try {
+      const result = await browser.runtime.sendMessage({
+        type: "decryptMessage",
+        messageId,
+      }) as { ok: boolean; error?: string } | undefined;
+      if (result && !result.ok) {
+        const errorMsg = result.error
+          ? browser.i18n.getMessage(result.error)
+          : browser.i18n.getMessage("decryptionError");
+        showBannerError(banner, errorMsg);
+        btn.disabled = false;
+        btn.textContent = buttonLabel;
+      }
+    } catch (e) {
+      showBannerError(banner, browser.i18n.getMessage("decryptionError"));
+      btn.disabled = false;
+      btn.textContent = buttonLabel;
+    }
   });
 
   banner.appendChild(icon);
@@ -135,6 +149,16 @@ function createIcon(): SVGSVGElement {
   svg.appendChild(rect);
   svg.appendChild(path);
   return svg;
+}
+
+function showBannerError(banner: HTMLElement, message: string) {
+  banner.classList.add("postguard-banner--error");
+  const existing = banner.querySelector(".postguard-banner__error");
+  if (existing) existing.remove();
+  const errorEl = document.createElement("span");
+  errorEl.className = "postguard-banner__error";
+  errorEl.textContent = message;
+  banner.appendChild(errorEl);
 }
 
 showBanner().catch((e) => console.error("[PostGuard] Message display script error:", e));

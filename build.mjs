@@ -1,10 +1,40 @@
 import * as esbuild from "esbuild";
-import { cpSync, mkdirSync, existsSync } from "fs";
+import { cpSync, mkdirSync, existsSync, readFileSync } from "fs";
 import path from "path";
 
 const isDev = process.argv.includes("--dev");
 const isWatch = process.argv.includes("--watch");
 const outdir = "dist";
+
+// Load .env file if present (KEY=VALUE per line, # comments)
+function loadEnv() {
+  const envPath = path.resolve(".env");
+  if (!existsSync(envPath)) return {};
+  const vars = {};
+  for (const line of readFileSync(envPath, "utf-8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    // Strip surrounding quotes
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    vars[key] = val;
+  }
+  return vars;
+}
+
+const env = loadEnv();
+
+// Build-time environment variables with defaults
+const envDefine = {
+  "process.env.NODE_ENV": '"production"',
+  "process.env.PKG_URL": JSON.stringify(env.PKG_URL || "https://postguard.staging.yivi.app/pkg"),
+  "process.env.POSTGUARD_WEBSITE_URL": JSON.stringify(env.POSTGUARD_WEBSITE_URL || "https://postguard.staging.yivi.app"),
+};
 
 // In release builds, strip console.log calls (marked pure so minification
 // removes them since the return value is never used) and minify output.
@@ -42,9 +72,7 @@ const backgroundBuild = {
   format: "esm",
   target: "firefox128",
   platform: "browser",
-  define: {
-    "process.env.NODE_ENV": '"production"',
-  },
+  define: envDefine,
   ...releaseOptions,
 };
 
