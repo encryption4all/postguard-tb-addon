@@ -1,0 +1,174 @@
+name: Build Thunderbird Extension
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate version consistency (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # Extract version from tag (v1.0.0 -> 1.0.0)
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+
+          # Get versions from files
+          MANIFEST_VERSION=$(jq -r '.version' manifest.json)
+          PACKAGE_VERSION=$(jq -r '.version' package.json)
+          UPDATES_LAST_VERSION=$(jq -r '.addons["pg4tb@e4a.org"].updates[-1].version // empty' updates.json)
+
+          echo "Tag version: $TAG_VERSION"
+          echo "Manifest version: $MANIFEST_VERSION"
+          echo "Package.json version: $PACKAGE_VERSION"
+          echo "Last version in updates.json: $UPDATES_LAST_VERSION"
+
+          print_fix_instructions() {
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "To fix this issue:"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "1. Delete the tag locally and remotely:"
+            echo "   git tag -d v${TAG_VERSION} && git push origin :refs/tags/v${TAG_VERSION}"
+            echo ""
+            echo "2. Update version to ${TAG_VERSION} in:"
+            echo "   - manifest.json (currently: ${MANIFEST_VERSION})"
+            echo "   - package.json (currently: ${PACKAGE_VERSION})"
+            echo "   - updates.json - add as last entry (currently: ${UPDATES_LAST_VERSION:-empty})"
+            echo ""
+            echo "3. Commit and push, then re-tag:"
+            echo "   git add manifest.json package.json updates.json"
+            echo "   git commit -m 'Bump version to ${TAG_VERSION}'"
+            echo "   git push origin main"
+            echo "   git tag v${TAG_VERSION} && git push origin v${TAG_VERSION}"
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          }
+
+          FAILED=0
+
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) does not match manifest.json version ($MANIFEST_VERSION)"
+            FAILED=1
+          fi
+
+          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) does not match package.json version ($PACKAGE_VERSION)"
+            FAILED=1
+          fi
+
+          if [ "$TAG_VERSION" != "$UPDATES_LAST_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) does not match last version in updates.json ($UPDATES_LAST_VERSION)"
+            FAILED=1
+          fi
+
+          if [ "$FAILED" -eq 1 ]; then
+            print_fix_instructions
+            exit 1
+          fi
+
+          echo "All versions match: $TAG_VERSION"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Package .xpi
+        run: |
+          VERSION=$(jq -r '.version' manifest.json)
+          cd dist && zip -r "../postguard-tb-addon-${VERSION}.xpi" .
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' manifest.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: postguard-tb-addon-${{ steps.version.outputs.version }}
+          path: |
+            postguard-tb-addon-${{ steps.version.outputs.version }}.xpi
+            updates.json
+          retention-days: 90
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' manifest.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: postguard-tb-addon-${{ steps.version.outputs.version }}
+
+      - name: Update updates.json with GitHub release URL
+        run: |
+          VERSION=$(jq -r '.version' manifest.json)
+          STRICT_MIN=$(jq -r '.browser_specific_settings.gecko.strict_min_version' manifest.json)
+
+          jq \
+            --arg version "$VERSION" \
+            --arg url "https://github.com/${{ github.repository }}/releases/download/v$VERSION/postguard-tb-addon-$VERSION.xpi" \
+            --arg min "$STRICT_MIN" \
+            '
+            .addons["pg4tb@e4a.org"].updates |= (
+              map(select(.version != $version)) + [{
+                version: $version,
+                update_link: $url,
+                applications: {
+                  gecko: {
+                    strict_min_version: $min
+                  }
+                }
+              }]
+            )
+            ' \
+            updates.json > updates.json.tmp
+
+          mv updates.json.tmp updates.json
+          cat updates.json
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            postguard-tb-addon-${{ steps.version.outputs.version }}.xpi
+            updates.json
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

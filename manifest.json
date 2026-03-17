@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
-  "version": "1.0.0",
+  "version": "0.8.0",
   "name": "__MSG_appName__",
   "description": "End-to-end email encryption using identity-based encryption and Yivi",
   "default_locale": "en",
   "browser_specific_settings": {
     "gecko": {
       "id": "pg4tb@e4a.org",
-      "strict_min_version": "128.0"
+      "strict_min_version": "128.0",
+      "update_url": "https://github.com/encryption4all/postguard-tb-addon/releases/latest/download/updates.json"
     }
   },
   "background": {
