@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "version": "1.0.0",
+  "version": "0.8.0",
   "name": "__MSG_appName__",
   "description": "End-to-end email encryption using identity-based encryption and Yivi",
   "default_locale": "en",
