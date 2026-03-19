@@ -18,11 +18,11 @@ import { findHtmlBody, extractArmoredPayload } from "../lib/utils";
 import { getUSK } from "../lib/pkg-client";
 import { typeToImage } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
-import {
-  checkLocalJwt as checkLocalJwtFromStore,
-  storeLocalJwt as storeLocalJwtFromStore,
-  cleanUpJwts,
-} from "../lib/jwt-store";
+// import {
+//   checkLocalJwt as checkLocalJwtFromStore,
+//   storeLocalJwt as storeLocalJwtFromStore,
+//   cleanUpJwts,
+// } from "../lib/jwt-store";
 import type { Policy, AttributeCon, KeySort, PopupData } from "../lib/types";
 
 const POSTGUARD_SUBJECT = "PostGuard Encrypted Email";
@@ -72,8 +72,8 @@ const pendingYiviPopups = new Map<
   }
 >();
 
-const checkLocalJwt = checkLocalJwtFromStore;
-const storeLocalJwt = storeLocalJwtFromStore;
+// const checkLocalJwt = checkLocalJwtFromStore;
+// const storeLocalJwt = storeLocalJwtFromStore;
 
 // --- Load pg-wasm and fetch PKG keys on startup ---
 console.log("[PostGuard] Loading pg-wasm and fetching PKG keys...");
@@ -213,12 +213,12 @@ browser.windows.onCreated.addListener(async (window) => {
   }
 });
 
-browser.alarms.create("jwt-cleanup", { periodInMinutes: 10 });
-browser.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "jwt-cleanup") {
-    cleanUpJwts().catch(console.error);
-  }
-});
+// browser.alarms.create("jwt-cleanup", { periodInMinutes: 10 });
+// browser.alarms.onAlarm.addListener((alarm) => {
+//   if (alarm.name === "jwt-cleanup") {
+//     cleanUpJwts().catch(console.error);
+//   }
+// });
 
 // --- Now await the heavy async loading ---
 
@@ -436,10 +436,11 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       );
       const totalId = [...pubSignId, ...(privSignId ?? [])];
 
-      // Get JWT for signing (from cache or Yivi popup)
-      const jwt = await checkLocalJwt(totalId).catch(() =>
-        createYiviPopup(totalId, "Signing")
-      );
+      // Get JWT for signing (from Yivi popup)
+      // const jwt = await checkLocalJwt(totalId).catch(() =>
+      //   createYiviPopup(totalId, "Signing")
+      // );
+      const jwt = await createYiviPopup(totalId, "Signing");
       const { pubSignKey, privSignKey } = await getSigningKeys(jwt, {
         pubSignId,
         privSignId,
@@ -465,7 +466,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       await browser.compose.addAttachment(tab.id, { file: encryptedFile });
 
       // Store JWT for later use
-      await storeLocalJwt(totalId, jwt);
+      // await storeLocalJwt(totalId, jwt);
 
       // Store MIME data for sent copy
       state.sentMimeData = mimeData;
@@ -537,13 +538,16 @@ async function handleToggleEncryption(tabId: number | undefined) {
     deliveryFormat: state.encrypt ? "both" : "auto",
   } as Partial<typeof details>);
 
-  return { encrypt: state.encrypt };
+  const hasRecipients = [...(details.to ?? []), ...(details.cc ?? [])].length > 0;
+  return { encrypt: state.encrypt, hasRecipients };
 }
 
 async function handleGetComposeState(tabId: number | undefined) {
-  if (tabId == null) return { encrypt: false };
+  if (tabId == null) return { encrypt: false, hasRecipients: false };
   const state = composeTabs.get(tabId);
-  return { encrypt: state?.encrypt ?? false, policy: state?.policy };
+  const details = await browser.compose.getComposeDetails(tabId);
+  const hasRecipients = [...(details.to ?? []), ...(details.cc ?? [])].length > 0;
+  return { encrypt: state?.encrypt ?? false, policy: state?.policy, hasRecipients };
 }
 
 // --- Policy editor flow ---
@@ -571,7 +575,7 @@ async function handleOpenPolicyEditor(
 
   // Build initial policy from current recipients
   const details = await browser.compose.getComposeDetails(tabId);
-  const recipients = sign ? [details.from] : [...details.to, ...details.cc];
+  const recipients = sign ? [details.from] : [...(details.to ?? []), ...(details.cc ?? [])];
 
   let initialPolicy: Policy = {};
   for (const r of recipients) {
@@ -842,14 +846,20 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
 
     console.log("[PostGuard] Decrypting with policy:", keyRequest);
 
-    // Get JWT from cache or Yivi popup
-    const jwt = await checkLocalJwt(hints).catch(() =>
-      createYiviPopup(
-        keyRequest.con,
-        "Decryption",
-        hints,
-        toEmail(msg.author)
-      )
+    // Get JWT from Yivi popup
+    // const jwt = await checkLocalJwt(hints).catch(() =>
+    //   createYiviPopup(
+    //     keyRequest.con,
+    //     "Decryption",
+    //     hints,
+    //     toEmail(msg.author)
+    //   )
+    // );
+    const jwt = await createYiviPopup(
+      keyRequest.con,
+      "Decryption",
+      hints,
+      toEmail(msg.author)
     );
 
     // Get USK from PKG
@@ -879,7 +889,7 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
     console.log("[PostGuard] Sender verification:", senderIdentity);
 
     // Store JWT on success
-    await storeLocalJwt(hints, jwt);
+    // await storeLocalJwt(hints, jwt);
 
     // Build badges from sender identity
     const privBadges = senderIdentity?.private?.con ?? [];
