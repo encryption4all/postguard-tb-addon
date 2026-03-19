@@ -9,28 +9,28 @@ const btnSign = document.getElementById("btn-sign") as HTMLButtonElement;
 async function init() {
   const state = (await browser.runtime.sendMessage({
     type: "getComposeState",
-  })) as { encrypt: boolean } | undefined;
+  })) as { encrypt: boolean; hasRecipients: boolean } | undefined;
 
   if (state) {
     toggle.checked = state.encrypt;
-    updateUI(state.encrypt);
+    updateUI(state.encrypt, state.hasRecipients);
   }
 }
 
-function updateUI(enabled: boolean) {
+function updateUI(enabled: boolean, hasRecipients = true) {
   statusText.textContent = enabled
     ? browser.i18n.getMessage("encryptionEnabled")
     : browser.i18n.getMessage("encryptionDisabled");
-  btnManage.disabled = !enabled;
+  btnManage.disabled = !enabled || !hasRecipients;
   btnSign.disabled = !enabled;
 }
 
 toggle.addEventListener("change", async () => {
   const result = (await browser.runtime.sendMessage({
     type: "toggleEncryption",
-  })) as { encrypt: boolean } | undefined;
+  })) as { encrypt: boolean; hasRecipients: boolean } | undefined;
   if (result) {
-    updateUI(result.encrypt);
+    updateUI(result.encrypt, result.hasRecipients);
   }
 });
 

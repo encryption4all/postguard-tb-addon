@@ -126,9 +126,6 @@ function showQrCode(sessionPtr: { u: string; irmaqr: string }) {
 
   qrContainer.innerHTML = `
     <div style="text-align:center;padding:20px;">
-      <p style="margin-bottom:16px;font-size:14px;">
-        ${browser.i18n.getMessage("displayMessageQrPrefix")}
-      </p>
       <div id="qr-canvas" style="display:inline-block;background:#fff;padding:16px;border-radius:8px;border:1px solid #e5e7eb;"></div>
     </div>
   `;
