@@ -6,8 +6,10 @@ interface InitData {
   sign: boolean;
 }
 
+const EMAIL_ATTR_TYPE = "pbdf.sidn-pbdf.email.email";
+
 const ATTRIBUTE_TYPES = [
-  { type: "pbdf.sidn-pbdf.email.email", label: "Email address", hasValue: true },
+  { type: EMAIL_ATTR_TYPE, label: "Email address", hasValue: true },
   { type: "pbdf.sidn-pbdf.mobilenumber.mobilenumber", label: "Mobile number", hasValue: true },
   { type: "pbdf.gemeente.personalData.surname", label: "Surname", hasValue: true },
   { type: "pbdf.gemeente.personalData.dateofbirth", label: "Date of birth", hasValue: true },
@@ -60,13 +62,18 @@ function renderRecipients(
 
     for (const attrType of ATTRIBUTE_TYPES) {
       const existing = attrs.find((a) => a.t === attrType.type);
+      // In sign mode, the email attribute is mandatory and locked to the sender's address
+      const isLockedEmail = initData?.sign && attrType.type === EMAIL_ATTR_TYPE;
+      const isChecked = isLockedEmail || !!existing;
+
       const item = document.createElement("label");
-      item.className = "attr-item" + (existing ? " selected" : "");
+      item.className = "attr-item" + (isChecked ? " selected" : "") + (isLockedEmail ? " locked" : "");
 
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
-      checkbox.checked = !!existing;
+      checkbox.checked = isChecked;
       checkbox.dataset.attrType = attrType.type;
+      if (isLockedEmail) checkbox.disabled = true;
 
       // Use localized label if available
       const labelText = browser.i18n.getMessage(attrType.type) || attrType.label;
@@ -78,8 +85,9 @@ function renderRecipients(
       const valueInput = document.createElement("input");
       valueInput.type = "text";
       valueInput.placeholder = labelText;
-      valueInput.value = existing?.v ?? "";
+      valueInput.value = isLockedEmail ? email : (existing?.v ?? "");
       valueInput.dataset.attrType = attrType.type;
+      if (isLockedEmail) valueInput.readOnly = true;
 
       valueContainer.appendChild(valueInput);
 
