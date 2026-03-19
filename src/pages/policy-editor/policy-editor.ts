@@ -62,8 +62,8 @@ function renderRecipients(
 
     for (const attrType of ATTRIBUTE_TYPES) {
       const existing = attrs.find((a) => a.t === attrType.type);
-      // In sign mode, the email attribute is mandatory and locked to the sender's address
-      const isLockedEmail = initData?.sign && attrType.type === EMAIL_ATTR_TYPE;
+      // Email attribute is always mandatory and locked to the recipient's/sender's address
+      const isLockedEmail = attrType.type === EMAIL_ATTR_TYPE;
       const isChecked = isLockedEmail || !!existing;
 
       const item = document.createElement("label");
