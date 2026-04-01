@@ -1,9 +1,6 @@
-export class PostGuardError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PostGuardError";
-  }
-}
+import { PostGuardError } from "@e4a/pg-js";
+
+export { PostGuardError };
 
 export class RecipientUnknownError extends PostGuardError {
   constructor() {

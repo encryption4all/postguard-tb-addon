@@ -52,7 +52,11 @@ function copyStatic() {
 
   // Copy pg-wasm WASM binary and JS bindings for manual loading.
   // public/pg-wasm/load.js (our custom loader) is already copied above.
-  const pgWasmSrc = "node_modules/@e4a/pg-wasm";
+  // pg-wasm >=0.5 puts bundler files under bundler/ subdirectory
+  const pgWasmPkg = "node_modules/@e4a/pg-wasm";
+  const pgWasmSrc = existsSync(path.join(pgWasmPkg, "bundler"))
+    ? path.join(pgWasmPkg, "bundler")
+    : pgWasmPkg;
   const pgWasmDest = path.join(outdir, "pg-wasm");
   mkdirSync(pgWasmDest, { recursive: true });
   for (const f of ["index_bg.js", "index_bg.wasm"]) {
@@ -73,6 +77,14 @@ const backgroundBuild = {
   target: "firefox128",
   platform: "browser",
   define: envDefine,
+  // Externalize packages that are loaded separately or not needed in the browser
+  external: [
+    "@e4a/pg-wasm",
+    "@privacybydesign/yivi-core",
+    "@privacybydesign/yivi-client",
+    "@privacybydesign/yivi-web",
+    "@transcend-io/conflux",
+  ],
   ...releaseOptions,
 };
 
