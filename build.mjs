@@ -68,15 +68,28 @@ function copyStatic() {
 
 copyStatic();
 
-// Packages that are either loaded separately (pg-wasm) or not needed
-// in the bundled flows (Cryptify, Conflux). The yivi packages ARE bundled
-// into the popup that uses runYiviSession, but pg-wasm is loaded via
-// the custom loader. eventsource is a node-only yivi-client transitive dep.
+// Packages loaded separately (pg-wasm via custom loader) or unused (Conflux).
 const pgExternals = [
   "@e4a/pg-wasm",
   "@transcend-io/conflux",
-  "eventsource",
 ];
+
+// esbuild plugin to shim Node-only packages with empty modules.
+// yivi-client imports 'eventsource' (Node SSE polyfill) at the top level,
+// but we disable SSE in our config so it's never used at runtime.
+const shimNodePackages = {
+  name: "shim-node-packages",
+  setup(build) {
+    build.onResolve({ filter: /^eventsource$/ }, () => ({
+      path: "eventsource",
+      namespace: "shim",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "shim" }, () => ({
+      contents: "export default class {}; export class EventSource {}",
+      loader: "js",
+    }));
+  },
+};
 
 // Background script
 const backgroundBuild = {
@@ -88,6 +101,7 @@ const backgroundBuild = {
   platform: "browser",
   define: envDefine,
   external: pgExternals,
+  plugins: [shimNodePackages],
   ...releaseOptions,
 };
 
@@ -140,6 +154,7 @@ const yiviPopupBuild = {
   target: "firefox128",
   platform: "browser",
   external: pgExternals,
+  plugins: [shimNodePackages],
   ...releaseOptions,
 };
 
