@@ -68,6 +68,16 @@ function copyStatic() {
 
 copyStatic();
 
+// Packages that are either loaded separately (pg-wasm) or not needed
+// in the bundled flows (Cryptify, Conflux). The yivi packages ARE bundled
+// into the popup that uses runYiviSession, but pg-wasm is loaded via
+// the custom loader. eventsource is a node-only yivi-client transitive dep.
+const pgExternals = [
+  "@e4a/pg-wasm",
+  "@transcend-io/conflux",
+  "eventsource",
+];
+
 // Background script
 const backgroundBuild = {
   entryPoints: ["src/background/background.ts"],
@@ -77,14 +87,7 @@ const backgroundBuild = {
   target: "firefox128",
   platform: "browser",
   define: envDefine,
-  // Externalize packages that are loaded separately or not needed in the browser
-  external: [
-    "@e4a/pg-wasm",
-    "@privacybydesign/yivi-core",
-    "@privacybydesign/yivi-client",
-    "@privacybydesign/yivi-web",
-    "@transcend-io/conflux",
-  ],
+  external: pgExternals,
   ...releaseOptions,
 };
 
@@ -136,6 +139,7 @@ const yiviPopupBuild = {
   format: "iife",
   target: "firefox128",
   platform: "browser",
+  external: pgExternals,
   ...releaseOptions,
 };
 
