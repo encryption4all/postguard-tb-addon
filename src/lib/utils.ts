@@ -6,23 +6,6 @@ export function toEmail(identity: string): string {
   return (match ? match[2] : identity).toLowerCase();
 }
 
-export function typeToImage(t: string): string {
-  switch (t) {
-    case "pbdf.sidn-pbdf.email.email":
-      return "envelope";
-    case "pbdf.sidn-pbdf.mobilenumber.mobilenumber":
-      return "phone";
-    case "pbdf.pbdf.surfnet-2.id":
-      return "education";
-    case "pbdf.nuts.agb.agbcode":
-      return "health";
-    case "pbdf.gemeente.personalData.dateofbirth":
-      return "calendar";
-    default:
-      return "personal";
-  }
-}
-
 export const EMAIL_ATTRIBUTE_TYPE = "pbdf.sidn-pbdf.email.email";
 
 export function findHtmlBody(part: { contentType?: string; body?: string; parts?: any[] }): string | null {

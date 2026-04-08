@@ -4,7 +4,7 @@ import { PostGuard } from "@e4a/pg-js";
 import { composeTabs, decryptedMessages } from "./state";
 import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
 import { toBase64, fromBase64 } from "../lib/encoding";
-import { toEmail, EMAIL_ATTRIBUTE_TYPE, typeToImage, findHtmlBody } from "../lib/utils";
+import { toEmail, EMAIL_ATTRIBUTE_TYPE, findHtmlBody } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
 import type {
   Policy,
@@ -690,8 +690,7 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
     // Build badges from sender identity (FriendlySender format)
     const sender = result.sender;
     const badges = (sender?.attributes ?? []).map(
-      ({ type: t, value: v }) => ({
-        type: typeToImage(t),
+      ({ value: v }) => ({
         value: v ?? "",
       })
     );

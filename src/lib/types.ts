@@ -8,7 +8,6 @@ export type AttributeCon = AttributeRequest[];
 export type Policy = Record<string, AttributeCon>;
 
 export interface Badge {
-  type: string;
   value: string;
 }
 

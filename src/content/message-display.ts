@@ -5,7 +5,7 @@ interface MessageState {
   messageId?: number;
   isEncrypted: boolean;
   wasEncrypted: boolean;
-  badges?: Array<{ type: string; value: string }>;
+  badges?: Array<{ value: string }>;
 }
 
 async function showBanner() {
@@ -101,7 +101,7 @@ function createInfoBanner(text: string) {
 
 function createBadgeBanner(
   text: string,
-  badges: Array<{ type: string; value: string }>
+  badges: Array<{ value: string }>
 ) {
   const banner = document.createElement("div");
   banner.className = "postguard-banner";
