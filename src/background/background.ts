@@ -331,7 +331,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
   if (!state?.encrypt) return;
 
   if (details.bcc.length > 0) {
-    console.warn("[PostGuard] BCC not supported with encryption");
+    notifyError("composeBccWarning");
     return { cancel: true };
   }
 
