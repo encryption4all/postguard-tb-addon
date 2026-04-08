@@ -32,11 +32,15 @@ function copyStatic() {
   cpSync("public", outdir, { recursive: true });
 
   // Copy pg-wasm binary next to each script that uses PostGuard.
-  // pg-js resolves it via fetch(new URL('index_bg.wasm', import.meta.url)).
-  const pgJsWasm = "node_modules/@e4a/pg-js/dist/index_bg.wasm";
-  if (existsSync(pgJsWasm)) {
-    cpSync(pgJsWasm, path.join(outdir, "index_bg.wasm"));
-    cpSync(pgJsWasm, path.join(outdir, "pages/yivi-popup/index_bg.wasm"));
+  // The pg-wasm web target's init() loads it via new URL('index_bg.wasm', import.meta.url).
+  const wasmCandidates = [
+    "node_modules/@e4a/pg-wasm/web/index_bg.wasm",
+    "node_modules/@e4a/pg-js/node_modules/@e4a/pg-wasm/web/index_bg.wasm",
+  ];
+  const wasmSrc = wasmCandidates.find((p) => existsSync(p));
+  if (wasmSrc) {
+    cpSync(wasmSrc, path.join(outdir, "index_bg.wasm"));
+    cpSync(wasmSrc, path.join(outdir, "pages/yivi-popup/index_bg.wasm"));
   }
 }
 
