@@ -163,6 +163,15 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
   }
 });
 
+// Clean up decryptedMessages when messages are deleted
+(browser.messages as any).onDeleted?.addListener(
+  (deletedMessages: { messages: { id: number }[] }) => {
+    for (const msg of deletedMessages.messages) {
+      decryptedMessages.delete(msg.id);
+    }
+  }
+);
+
 browser.windows.onCreated.addListener(async (window) => {
   if (window.type === "messageCompose") {
     const tabs = await browser.tabs.query({ windowId: window.id });
