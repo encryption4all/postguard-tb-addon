@@ -158,6 +158,7 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
     }
   } catch (e) {
     console.error("[PostGuard] Failed to manage sent copy:", e);
+    notifyError("sentCopyError");
   } finally {
     composeTabs.delete(tab.id);
   }
