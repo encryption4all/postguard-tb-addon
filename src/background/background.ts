@@ -1,6 +1,6 @@
 /// <reference path="../types/thunderbird.d.ts" />
 
-import { PostGuard } from "@e4a/pg-js";
+import { buildMime, extractCiphertext, injectMimeHeaders } from "@e4a/pg-js";
 import { composeTabs, decryptedMessages } from "./state";
 import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
 import { toBase64, fromBase64 } from "../lib/encoding";
@@ -35,14 +35,6 @@ export const PG_CLIENT_HEADER = {
 console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
 
 // --- Module-level state ---
-
-// PostGuard instance for email helpers only (buildMime, extractCiphertext, injectMimeHeaders).
-// Crypto operations (encrypt/decrypt) run in the popup with their own instance.
-const pg = new PostGuard({
-  pkgUrl: PKG_URL!,
-  cryptifyUrl: CRYPTIFY_URL,
-  headers: PG_CLIENT_HEADER,
-});
 
 // Pending popup tracking maps
 const pendingPolicyEditors = new Map<
@@ -381,7 +373,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       }
 
       // Build inner MIME using SDK email helpers
-      const mimeData = pg.email.buildMime({
+      const mimeData = buildMime({
         from: details.from,
         to: [...details.to],
         cc: [...details.cc],
@@ -659,7 +651,7 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
       // ignore
     }
 
-    const ciphertext = pg.email.extractCiphertext({
+    const ciphertext = extractCiphertext({
       htmlBody: htmlBody ?? undefined,
       attachments: attData,
     });
@@ -710,11 +702,11 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
 
     let markedPlaintext = plaintext;
     if (Object.keys(threadingHeaders).length > 0) {
-      markedPlaintext = pg.email.injectMimeHeaders(markedPlaintext, threadingHeaders, threadingRemove);
+      markedPlaintext = injectMimeHeaders(markedPlaintext, threadingHeaders, threadingRemove);
     }
 
     // Inject X-PostGuard header
-    markedPlaintext = pg.email.injectMimeHeaders(markedPlaintext, { "X-PostGuard": "decrypted" });
+    markedPlaintext = injectMimeHeaders(markedPlaintext, { "X-PostGuard": "decrypted" });
 
     // Import decrypted message into the original folder
     const file = new File([markedPlaintext], "decrypted.eml", {
