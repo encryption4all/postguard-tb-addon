@@ -633,13 +633,6 @@ async function handlePolicyEditorDone(
 
   pending.resolve(policy);
   pendingPolicyEditors.delete(windowId);
-  await browser.windows.get(windowId).then(() =>
-    setTimeout(() => {
-      try {
-        // Window might already be closed
-      } catch {}
-    }, 100)
-  ).catch(() => {});
 }
 
 // --- Decrypt message ---
