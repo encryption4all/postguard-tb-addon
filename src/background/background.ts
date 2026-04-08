@@ -111,7 +111,6 @@ browser.runtime.onMessage.addListener(
           msg.policy as Policy
         );
       case "cryptoPopupInit": {
-        console.log("[PostGuard] onMessage: cryptoPopupInit, msg.windowId =", msg.windowId, "sender.tab =", JSON.stringify(sender.tab));
         // Must return a Promise — synchronous returns are not forwarded as responses in TB/Firefox
         const initWindowId = msg.windowId as number | undefined ?? sender.tab?.windowId;
         return Promise.resolve(handleCryptoPopupInit(initWindowId));
@@ -254,7 +253,6 @@ function keepAlive(name: string, promise: Promise<unknown>) {
 async function openCryptoPopup(data: CryptoPopupInitData): Promise<CryptoPopupResult> {
   const { promise, resolve, reject } = Promise.withResolvers<CryptoPopupResult>();
 
-  console.log("[PostGuard] openCryptoPopup: creating window for", data.operation);
   const popup = await browser.windows.create({
     url: "pages/yivi-popup/yivi-popup.html",
     type: "popup",
@@ -263,11 +261,9 @@ async function openCryptoPopup(data: CryptoPopupInitData): Promise<CryptoPopupRe
   });
 
   const popupId = popup.id;
-  console.log("[PostGuard] openCryptoPopup: window created, popupId =", popupId);
 
   // Register IMMEDIATELY after create, before the popup script can send cryptoPopupInit
   pendingCryptoPopups.set(popupId, { data, resolve, reject });
-  console.log("[PostGuard] openCryptoPopup: registered in pendingCryptoPopups, keys:", [...pendingCryptoPopups.keys()]);
 
   const closeListener = (closedId: number) => {
     if (closedId === popupId) {
@@ -290,17 +286,9 @@ async function openCryptoPopup(data: CryptoPopupInitData): Promise<CryptoPopupRe
 }
 
 function handleCryptoPopupInit(windowId: number | undefined) {
-  console.log("[PostGuard] handleCryptoPopupInit: windowId =", windowId, "pending keys:", [...pendingCryptoPopups.keys()]);
-  if (windowId == null) {
-    console.log("[PostGuard] handleCryptoPopupInit: windowId is null/undefined");
-    return null;
-  }
+  if (windowId == null) return null;
   const pending = pendingCryptoPopups.get(windowId);
-  if (!pending) {
-    console.log("[PostGuard] handleCryptoPopupInit: no pending entry for windowId", windowId);
-    return null;
-  }
-  console.log("[PostGuard] handleCryptoPopupInit: found pending entry, operation =", pending.data.operation);
+  if (!pending) return null;
   return pending.data;
 }
 
