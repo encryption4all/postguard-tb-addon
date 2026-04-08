@@ -33,6 +33,7 @@ const env = loadEnv();
 const envDefine = {
   "process.env.NODE_ENV": '"production"',
   "process.env.PKG_URL": JSON.stringify(env.PKG_URL || "https://postguard.staging.yivi.app/pkg"),
+  "process.env.CRYPTIFY_URL": JSON.stringify(env.CRYPTIFY_URL || "https://fileshare.staging.postguard.eu"),
   "process.env.POSTGUARD_WEBSITE_URL": JSON.stringify(env.POSTGUARD_WEBSITE_URL || "https://postguard.staging.yivi.app"),
 };
 
@@ -68,18 +69,26 @@ function copyStatic() {
 
 copyStatic();
 
-// Packages loaded separately (pg-wasm via custom loader) or unused (Conflux).
+// Packages that are unused in the extension context.
 const pgExternals = [
-  "@e4a/pg-wasm",
   "@transcend-io/conflux",
 ];
 
-// esbuild plugin to shim Node-only packages with empty modules.
-// yivi-client imports 'eventsource' (Node SSE polyfill) at the top level,
-// but we disable SSE in our config so it's never used at runtime.
-const shimNodePackages = {
-  name: "shim-node-packages",
+// esbuild plugin to remap @e4a/pg-wasm to our custom loader and shim Node-only packages.
+// - pg-wasm: The SDK dynamically imports @e4a/pg-wasm, but Thunderbird can't resolve
+//   bare specifiers at runtime. We remap it to ./pg-wasm/load.js (our custom WASM loader)
+//   and keep it external so import.meta.url resolves correctly inside load.js.
+// - eventsource: yivi-client imports this Node SSE polyfill at the top level,
+//   but we disable SSE in our config so it's never used at runtime.
+const extensionPlugins = {
+  name: "extension-plugins",
   setup(build) {
+    // Remap @e4a/pg-wasm to custom loader (kept external)
+    build.onResolve({ filter: /^@e4a\/pg-wasm$/ }, () => ({
+      path: "./pg-wasm/load.js",
+      external: true,
+    }));
+    // Shim eventsource (unused Node polyfill)
     build.onResolve({ filter: /^eventsource$/ }, () => ({
       path: "eventsource",
       namespace: "shim",
@@ -101,7 +110,7 @@ const backgroundBuild = {
   platform: "browser",
   define: envDefine,
   external: pgExternals,
-  plugins: [shimNodePackages],
+  plugins: [extensionPlugins],
   ...releaseOptions,
 };
 
@@ -154,7 +163,7 @@ const yiviPopupBuild = {
   target: "firefox128",
   platform: "browser",
   external: pgExternals,
-  plugins: [shimNodePackages],
+  plugins: [extensionPlugins],
   ...releaseOptions,
 };
 

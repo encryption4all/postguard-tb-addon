@@ -15,7 +15,6 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
-    "@e4a/pg-js": "file:../postguard-js",
-    "@e4a/pg-wasm": "^0.5.5"
+    "@e4a/pg-js": "file:../postguard-js"
   }
 }

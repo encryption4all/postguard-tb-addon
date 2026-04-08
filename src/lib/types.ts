@@ -30,8 +30,3 @@ export interface SessionStartResult {
   };
   token: string;
 }
-
-export interface SenderIdentity {
-  public: { con: AttributeRequest[] };
-  private?: { con: AttributeRequest[] };
-}

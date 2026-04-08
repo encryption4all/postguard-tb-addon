@@ -1,19 +1,12 @@
 /// <reference path="../types/thunderbird.d.ts" />
 
 import { PostGuard } from "@e4a/pg-js";
-import type { WasmModule, SenderIdentity, DecryptDataResult } from "@e4a/pg-js";
+import type { DecryptDataResult } from "@e4a/pg-js";
 import { composeTabs, decryptedMessages } from "./state";
 import type { ComposeTabState } from "./state";
-import {
-  fetchPublicKey,
-  fetchVerificationKey,
-  setClientHeader,
-  getClientHeader,
-  PKG_URL,
-} from "../lib/pkg-client";
+import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE, typeToImage, findHtmlBody } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
-import { injectMimeHeaders } from "@e4a/pg-js";
 import type { Policy, AttributeCon, KeySort, PopupData } from "../lib/types";
 
 const POSTGUARD_SUBJECT = "PostGuard Encrypted Email";
@@ -35,10 +28,7 @@ export const PG_CLIENT_HEADER = {
 
 console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
 
-setClientHeader(PG_CLIENT_HEADER);
-
 // --- Module-level state ---
-let pgWasm: WasmModule | null = null;
 let pg: PostGuard | null = null;
 
 // Pending popup tracking maps
@@ -62,21 +52,13 @@ const pendingYiviPopups = new Map<
   }
 >();
 
-// --- Load pg-wasm and fetch PKG keys on startup ---
-console.log("[PostGuard] Loading pg-wasm and fetching PKG keys...");
-
-// Use indirect dynamic import to prevent esbuild from resolving it
-const pgWasmPath = "./pg-wasm/load.js";
-const modPromise = import(/* @vite-ignore */ pgWasmPath).then((mod: any) => {
-  console.log("[PostGuard] pg-wasm loaded");
-  return mod as WasmModule;
-}).catch((e: Error) => {
-  console.error("[PostGuard] Failed to load pg-wasm:", e);
-  return null;
+// --- Initialize PostGuard SDK ---
+// The SDK dynamically imports @e4a/pg-wasm, which the build remaps to ./pg-wasm/load.js.
+pg = new PostGuard({
+  pkgUrl: PKG_URL!,
+  cryptifyUrl: CRYPTIFY_URL,
+  headers: PG_CLIENT_HEADER,
 });
-
-const pkPromise = fetchPublicKey();
-const vkPromise = fetchVerificationKey();
 
 // --- Register message display script ---
 browser.scripting.messageDisplay
@@ -180,31 +162,6 @@ browser.windows.onCreated.addListener(async (window) => {
   }
 });
 
-// --- Now await the heavy async loading ---
-
-const [_pgWasm, _pk, _vk] = await Promise.all([
-  modPromise,
-  pkPromise.catch((e: Error) => { console.error("[PostGuard] PK fetch failed:", e); return null; }),
-  vkPromise.catch((e: Error) => { console.error("[PostGuard] VK fetch failed:", e); return null; }),
-]);
-pgWasm = _pgWasm;
-
-if (_pk) console.log("[PostGuard] Master public key loaded");
-if (_vk) console.log("[PostGuard] Verification key loaded");
-
-if (!pgWasm || !_pk || !_vk) {
-  notifyError("startupError");
-}
-
-// Initialize PostGuard SDK with pre-loaded WASM module
-if (pgWasm) {
-  pg = new PostGuard({
-    pkgUrl: PKG_URL!,
-    headers: PG_CLIENT_HEADER,
-    wasm: pgWasm,
-  });
-}
-
 // --- Compose Action: toggle encryption per tab ---
 
 async function updateComposeActionIcon(tabId: number) {
@@ -253,10 +210,7 @@ async function isPGEncrypted(msgId: number): Promise<boolean> {
   try {
     const full = await browser.messages.getFull(msgId);
     const bodyHtml = findHtmlBody(full);
-    if (bodyHtml) {
-      const { extractArmoredPayload } = await import("@e4a/pg-js");
-      if (extractArmoredPayload(bodyHtml)) return true;
-    }
+    if (bodyHtml && bodyHtml.includes("-----BEGIN POSTGUARD MESSAGE-----")) return true;
   } catch {
     // ignore
   }
@@ -385,8 +339,8 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         signCon.push(...privSignId);
       }
 
-      // Encrypt using SDK with session callback for Yivi signing
-      const encrypted = await pg!.encrypt({
+      // Build sealed encryption builder (lazy — encrypts when createEnvelope calls toBytes)
+      const sealed = pg!.encrypt({
         sign: pg!.sign.session(
           async ({ con, sort }) => createYiviPopup(con as AttributeCon, sort as KeySort),
           { senderEmail: from }
@@ -400,14 +354,21 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         await browser.compose.removeAttachment(tab.id, att.id);
       }
 
-      // Create encrypted email envelope using SDK
-      const envelope = pg!.email.createEnvelope({
-        encrypted,
+      // Create encrypted email envelope using SDK (encrypts + builds placeholder HTML).
+      // For large payloads, createEnvelope auto-uploads to Cryptify and puts a
+      // download link in the HTML body.
+      const envelope = await pg!.email.createEnvelope({
+        sealed,
         from: details.from,
+        websiteUrl: POSTGUARD_WEBSITE_URL,
       });
 
-      // Add encrypted attachment
-      await browser.compose.addAttachment(tab.id, { file: envelope.attachment });
+      // Only attach the encrypted file if it's under 5 MB.
+      // Larger payloads are already uploaded to Cryptify with a download link in the HTML.
+      const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
+      if (envelope.attachment.size <= MAX_ATTACHMENT_SIZE) {
+        await browser.compose.addAttachment(tab.id, { file: envelope.attachment });
+      }
 
       // Store MIME data for sent copy
       state.sentMimeData = mimeData;
@@ -723,10 +684,10 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
     // Find our email among recipients
     const myAddresses = [...msg.recipients, ...msg.ccList].map(toEmail);
 
-    // Decrypt using SDK with session callback
-    const result = await pg.decrypt({
-      data: ciphertext,
-      recipient: myAddresses[0], // SDK will try to match
+    // Decrypt using SDK: open sealed data, then decrypt with session callback
+    const opened = pg.open({ data: ciphertext });
+    const result = await opened.decrypt({
+      recipient: myAddresses[0],
       session: async ({ con, sort, hints, senderId }) => {
         return createYiviPopup(
           con as AttributeCon,
@@ -739,11 +700,10 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
 
     const plaintext = new TextDecoder().decode(result.plaintext);
 
-    // Build badges from sender identity
-    const senderIdentity = result.sender;
-    const privBadges = senderIdentity?.private?.con ?? [];
-    const badges = [...(senderIdentity?.public?.con ?? []), ...privBadges].map(
-      ({ t, v }: { t: string; v?: string }) => ({
+    // Build badges from sender identity (FriendlySender format)
+    const sender = result.sender;
+    const badges = (sender?.attributes ?? []).map(
+      ({ type: t, value: v }) => ({
         type: typeToImage(t),
         value: v ?? "",
       })
