@@ -126,7 +126,10 @@ function collectPolicy(): Record<string, Array<{ t: string; v: string }>> {
       const valueInput = section.querySelector<HTMLInputElement>(
         `input[type="text"][data-attr-type="${type}"]`
       );
-      attrs.push({ t: type, v: valueInput?.value ?? "" });
+      const value = valueInput?.value?.trim() ?? "";
+      // Skip non-email attributes with empty values
+      if (!value && type !== EMAIL_ATTR_TYPE) continue;
+      attrs.push({ t: type, v: value });
     }
 
     policy[email] = attrs;
