@@ -11,6 +11,7 @@
     "package": "npm run build && cd dist && zip -r ../postguard-tb-addon-$(node -p \"require('../package.json').version\").xpi ."
   },
   "devDependencies": {
+    "dotenv": "^17.4.1",
     "esbuild": "^0.24.0",
     "typescript": "^5.6.0"
   },
