@@ -147,12 +147,12 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
           const file = new File([state.sentMimeData as BlobPart], "sent.eml", {
             type: "text/plain",
           });
-          const localMsg = await (browser.messages as any).import(
+          const localMsg = await browser.messages.import(
             file,
             localFolder.id
           );
-          await browser.messages.move([localMsg.id], msg.folder.id as any);
-          await (browser.messages as any).delete([msg.id], true);
+          await browser.messages.move([localMsg.id], msg.folder.id);
+          await browser.messages.delete([msg.id], true);
         }
       }
     }
@@ -165,13 +165,11 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
 });
 
 // Clean up decryptedMessages when messages are deleted
-(browser.messages as any).onDeleted?.addListener(
-  (deletedMessages: { messages: { id: number }[] }) => {
-    for (const msg of deletedMessages.messages) {
-      decryptedMessages.delete(msg.id);
-    }
+browser.messages.onDeleted.addListener((deletedMessages) => {
+  for (const msg of deletedMessages.messages) {
+    decryptedMessages.delete(msg.id);
   }
-);
+});
 
 browser.windows.onCreated.addListener(async (window) => {
   if (window.type === "messageCompose") {
@@ -356,7 +354,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       const composeAttachments = await browser.compose.listAttachments(tab.id);
       const attachmentData = await Promise.all(
         composeAttachments.map(async (att) => {
-          const file = await browser.compose.getAttachmentFile(att.id) as unknown as File;
+          const file = await browser.compose.getAttachmentFile(att.id);
           return {
             name: file.name,
             type: file.type,
@@ -648,7 +646,7 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
         const file = await browser.messages.getAttachmentFile(messageId, att.partName);
         return {
           name: att.name,
-          data: await (file as any).arrayBuffer(),
+          data: await file.arrayBuffer(),
         };
       })
     );
@@ -723,7 +721,7 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
     const file = new File([markedPlaintext], "decrypted.eml", {
       type: "text/plain",
     });
-    const importedMsg = await (browser.messages as any).import(file, msg.folder.id);
+    const importedMsg = await browser.messages.import(file, msg.folder.id);
     const importedMsgId = importedMsg.id;
     console.log("[PostGuard] Imported decrypted message:", importedMsgId);
 
@@ -731,7 +729,7 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
     decryptedMessages.set(importedMsgId, { badges });
 
     // Delete the encrypted original
-    await (browser.messages as any).delete([messageId], true);
+    await browser.messages.delete([messageId], true);
 
     // Select the decrypted message in the current mail tab
     try {

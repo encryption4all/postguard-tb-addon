@@ -91,20 +91,29 @@ declare namespace browser {
     };
   }
 
-  namespace messages {
-    function get(messageId: number): Promise<MessageHeader>;
-    function getFull(messageId: number): Promise<{ headers: Record<string, string[]>; parts?: MessagePart[] }>;
-    function listAttachments(messageId: number): Promise<MessageAttachment[]>;
-    function getAttachmentFile(messageId: number, partName: string): Promise<File>;
-    function update(messageId: number, newProperties: Record<string, unknown>): Promise<void>;
-    function move(messageIds: number[], destination: MailFolder): Promise<void>;
-    function query(queryInfo: Record<string, unknown>): Promise<{ messages: MessageHeader[] }>;
-    function list(folder: MailFolder): Promise<{ messages: MessageHeader[] }>;
-    function archive(messageIds: number[]): Promise<void>;
-    // import/delete are reserved words — accessed via (browser.messages as any).import() at runtime
-    function import_(file: File, destination: MailFolder | string): Promise<MessageHeader>;
-    function delete_(messageIds: number[], skipTrash?: boolean): Promise<void>;
+  // messages.import() and messages.delete() are JS reserved words, so they
+  // can't be declared as regular functions. Use bracket access at runtime:
+  //   (browser.messages as Messages).import(file, dest)
+  //   (browser.messages as Messages).delete(ids, skipTrash)
+  interface Messages {
+    get(messageId: number): Promise<MessageHeader>;
+    getFull(messageId: number): Promise<{ headers: Record<string, string[]>; parts?: MessagePart[] }>;
+    listAttachments(messageId: number): Promise<MessageAttachment[]>;
+    getAttachmentFile(messageId: number, partName: string): Promise<File>;
+    update(messageId: number, newProperties: Record<string, unknown>): Promise<void>;
+    move(messageIds: number[], destination: MailFolder | string): Promise<void>;
+    query(queryInfo: Record<string, unknown>): Promise<{ messages: MessageHeader[] }>;
+    list(folder: MailFolder): Promise<{ messages: MessageHeader[] }>;
+    archive(messageIds: number[]): Promise<void>;
+    import(file: File, destination: MailFolder | string): Promise<MessageHeader>;
+    delete(messageIds: number[], skipTrash?: boolean): Promise<void>;
+    onDeleted: {
+      addListener(callback: (deletedMessages: { messages: MessageHeader[] }) => void): void;
+      removeListener(callback: (deletedMessages: { messages: MessageHeader[] }) => void): void;
+    };
   }
+
+  const messages: Messages;
 
   // messages.import() and messages.delete() — these are the actual API names
   // TypeScript uses _import and _delete due to reserved words
