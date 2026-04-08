@@ -25,14 +25,10 @@ function notifyError(messageKey: string) {
   });
 }
 
-const { version: tbVersion } = await browser.runtime.getBrowserInfo();
-const extVersion = browser.runtime.getManifest().version;
-
-export const PG_CLIENT_HEADER = {
-  "X-PostGuard-Client-Version": `Thunderbird,${tbVersion},pg4tb,${extVersion}`,
-};
-
-console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
+// Populated after listeners are registered (see bottom of file).
+// All code that uses this runs in response to user actions, so it is
+// always set by the time it is read.
+export let PG_CLIENT_HEADER: Record<string, string> = {};
 
 // --- Module-level state ---
 
@@ -191,6 +187,17 @@ async function updateComposeActionIcon(tabId: number) {
       : browser.i18n.getMessage("encryptionDisabled"),
   });
 }
+
+// --- Deferred initialization (after all listeners are registered) ---
+
+const { version: tbVersion } = await browser.runtime.getBrowserInfo();
+const extVersion = browser.runtime.getManifest().version;
+
+PG_CLIENT_HEADER = {
+  "X-PostGuard-Client-Version": `Thunderbird,${tbVersion},pg4tb,${extVersion}`,
+};
+
+console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
 
 // Initialize state for any existing compose tabs on startup
 const existingTabs = await browser.tabs.query({ type: "messageCompose" });
