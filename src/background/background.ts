@@ -1,13 +1,19 @@
 /// <reference path="../types/thunderbird.d.ts" />
 
 import { PostGuard } from "@e4a/pg-js";
-import type { DecryptDataResult } from "@e4a/pg-js";
 import { composeTabs, decryptedMessages } from "./state";
-import type { ComposeTabState } from "./state";
 import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
+import { toBase64, fromBase64 } from "../lib/encoding";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE, typeToImage, findHtmlBody } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
-import type { Policy, AttributeCon, KeySort, PopupData } from "../lib/types";
+import type {
+  Policy,
+  SerializedRecipient,
+  CryptoPopupInitData,
+  CryptoPopupResult,
+  EncryptPopupResult,
+  DecryptPopupResult,
+} from "../lib/types";
 
 const POSTGUARD_SUBJECT = "PostGuard Encrypted Email";
 
@@ -29,7 +35,14 @@ export const PG_CLIENT_HEADER = {
 console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
 
 // --- Module-level state ---
-let pg: PostGuard | null = null;
+
+// PostGuard instance for email helpers only (buildMime, extractCiphertext, injectMimeHeaders).
+// Crypto operations (encrypt/decrypt) run in the popup with their own instance.
+const pg = new PostGuard({
+  pkgUrl: PKG_URL!,
+  cryptifyUrl: CRYPTIFY_URL,
+  headers: PG_CLIENT_HEADER,
+});
 
 // Pending popup tracking maps
 const pendingPolicyEditors = new Map<
@@ -43,22 +56,14 @@ const pendingPolicyEditors = new Map<
   }
 >();
 
-const pendingYiviPopups = new Map<
+const pendingCryptoPopups = new Map<
   number,
   {
-    data: PopupData;
-    resolve: (jwt: string) => void;
+    data: CryptoPopupInitData;
+    resolve: (result: CryptoPopupResult) => void;
     reject: (err: Error) => void;
   }
 >();
-
-// --- Initialize PostGuard SDK ---
-// The SDK dynamically imports @e4a/pg-wasm, which the build remaps to ./pg-wasm/load.js.
-pg = new PostGuard({
-  pkgUrl: PKG_URL!,
-  cryptifyUrl: CRYPTIFY_URL,
-  headers: PG_CLIENT_HEADER,
-});
 
 // --- Register message display script ---
 browser.scripting.messageDisplay
@@ -99,19 +104,28 @@ browser.runtime.onMessage.addListener(
       case "openSignEditor":
         return handleOpenPolicyEditor(sender.tab?.windowId, true);
       case "policyEditorInit":
-        return handlePolicyEditorInit(sender.tab?.windowId);
+        return Promise.resolve(handlePolicyEditorInit(sender.tab?.windowId));
       case "policyEditorDone":
         return handlePolicyEditorDone(
           sender.tab?.windowId,
           msg.policy as Policy
         );
-      case "yiviPopupInit":
-        return handleYiviPopupInit(sender.tab?.windowId);
-      case "yiviPopupDone":
-        return handleYiviPopupDone(
-          sender.tab?.windowId,
-          msg.jwt as string
-        );
+      case "cryptoPopupInit": {
+        console.log("[PostGuard] onMessage: cryptoPopupInit, msg.windowId =", msg.windowId, "sender.tab =", JSON.stringify(sender.tab));
+        // Must return a Promise — synchronous returns are not forwarded as responses in TB/Firefox
+        const initWindowId = msg.windowId as number | undefined ?? sender.tab?.windowId;
+        return Promise.resolve(handleCryptoPopupInit(initWindowId));
+      }
+      case "cryptoPopupDone":
+        return Promise.resolve(handleCryptoPopupDone(
+          msg.windowId as number | undefined ?? sender.tab?.windowId,
+          msg.result as CryptoPopupResult
+        ));
+      case "cryptoPopupError":
+        return Promise.resolve(handleCryptoPopupError(
+          msg.windowId as number | undefined ?? sender.tab?.windowId,
+          msg.error as string
+        ));
       case "decryptMessage":
         return handleDecryptMessage(msg.messageId as number);
       default:
@@ -235,6 +249,83 @@ function keepAlive(name: string, promise: Promise<unknown>) {
   });
 }
 
+// --- Crypto popup: opens popup that owns encrypt/decrypt ---
+
+async function openCryptoPopup(data: CryptoPopupInitData): Promise<CryptoPopupResult> {
+  const { promise, resolve, reject } = Promise.withResolvers<CryptoPopupResult>();
+
+  console.log("[PostGuard] openCryptoPopup: creating window for", data.operation);
+  const popup = await browser.windows.create({
+    url: "pages/yivi-popup/yivi-popup.html",
+    type: "popup",
+    height: 700,
+    width: 620,
+  });
+
+  const popupId = popup.id;
+  console.log("[PostGuard] openCryptoPopup: window created, popupId =", popupId);
+
+  // Register IMMEDIATELY after create, before the popup script can send cryptoPopupInit
+  pendingCryptoPopups.set(popupId, { data, resolve, reject });
+  console.log("[PostGuard] openCryptoPopup: registered in pendingCryptoPopups, keys:", [...pendingCryptoPopups.keys()]);
+
+  const closeListener = (closedId: number) => {
+    if (closedId === popupId) {
+      const pending = pendingCryptoPopups.get(popupId);
+      if (pending) {
+        pending.reject(new Error("Popup closed"));
+        pendingCryptoPopups.delete(popupId);
+      }
+      browser.windows.onRemoved.removeListener(closeListener);
+    }
+  };
+  browser.windows.onRemoved.addListener(closeListener);
+
+  await browser.windows.update(popupId, {
+    drawAttention: true,
+    focused: true,
+  });
+
+  return keepAlive("crypto-popup", promise) as Promise<CryptoPopupResult>;
+}
+
+function handleCryptoPopupInit(windowId: number | undefined) {
+  console.log("[PostGuard] handleCryptoPopupInit: windowId =", windowId, "pending keys:", [...pendingCryptoPopups.keys()]);
+  if (windowId == null) {
+    console.log("[PostGuard] handleCryptoPopupInit: windowId is null/undefined");
+    return null;
+  }
+  const pending = pendingCryptoPopups.get(windowId);
+  if (!pending) {
+    console.log("[PostGuard] handleCryptoPopupInit: no pending entry for windowId", windowId);
+    return null;
+  }
+  console.log("[PostGuard] handleCryptoPopupInit: found pending entry, operation =", pending.data.operation);
+  return pending.data;
+}
+
+function handleCryptoPopupDone(
+  windowId: number | undefined,
+  result: CryptoPopupResult
+) {
+  if (windowId == null) return;
+  const pending = pendingCryptoPopups.get(windowId);
+  if (!pending) return;
+  pending.resolve(result);
+  pendingCryptoPopups.delete(windowId);
+}
+
+function handleCryptoPopupError(
+  windowId: number | undefined,
+  error: string
+) {
+  if (windowId == null) return;
+  const pending = pendingCryptoPopups.get(windowId);
+  if (!pending) return;
+  pending.reject(new Error(error));
+  pendingCryptoPopups.delete(windowId);
+}
+
 // --- onBeforeSend: encryption hook ---
 
 async function handleBeforeSend(tab: { id: number }, details: any) {
@@ -251,12 +342,6 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       drawAttention: true,
       focused: true,
     });
-    return { cancel: true };
-  }
-
-  if (!pg) {
-    console.error("[PostGuard] SDK not initialized, cannot encrypt");
-    notifyError("encryptionError");
     return { cancel: true };
   }
 
@@ -299,8 +384,8 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         }
       }
 
-      // Build inner MIME using SDK
-      const mimeData = pg!.email.buildMime({
+      // Build inner MIME using SDK email helpers
+      const mimeData = pg.email.buildMime({
         from: details.from,
         to: [...details.to],
         cc: [...details.cc],
@@ -313,61 +398,54 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         attachments: attachmentData,
       });
 
-      // Build recipients with custom policies if set
+      // Serialize recipients for the popup
       const customPolicies = state.policy;
-      const recipients = [...details.to, ...details.cc];
-      const pgRecipients = recipients.map((r: string) => {
+      const allRecipients = [...details.to, ...details.cc];
+      const serializedRecipients: SerializedRecipient[] = allRecipients.map((r: string) => {
         const id = toEmail(r);
         if (customPolicies && customPolicies[id]) {
-          return pg!.recipient.withPolicy(
-            id,
-            customPolicies[id].map(({ t, v }) =>
+          return {
+            type: "customPolicy" as const,
+            email: id,
+            policy: customPolicies[id].map(({ t, v }) =>
               t === EMAIL_ATTRIBUTE_TYPE ? { t, v: v.toLowerCase() } : { t, v }
-            )
-          );
+            ),
+          };
         }
-        return pg!.recipient.email(id);
+        return { type: "email" as const, email: id };
       });
 
-      // Build sign identity
       const from = toEmail(details.from);
-      const signCon: AttributeCon = [{ t: EMAIL_ATTRIBUTE_TYPE, v: from }];
-      const privSignId = state.signId?.[from]?.filter(
-        ({ t }) => t !== EMAIL_ATTRIBUTE_TYPE
-      );
-      if (privSignId) {
-        signCon.push(...privSignId);
-      }
 
-      // Build sealed encryption builder (lazy — encrypts when createEnvelope calls toBytes)
-      const sealed = pg!.encrypt({
-        sign: pg!.sign.session(
-          async ({ con, sort }) => createYiviPopup(con as AttributeCon, sort as KeySort),
-          { senderEmail: from }
-        ),
-        recipients: pgRecipients,
-        data: mimeData,
-      });
-
-      // Remove original attachments
+      // Remove original attachments before popup (so they don't send unencrypted)
       for (const att of composeAttachments) {
         await browser.compose.removeAttachment(tab.id, att.id);
       }
 
-      // Create encrypted email envelope using SDK (encrypts + builds placeholder HTML).
-      // For large payloads, createEnvelope auto-uploads to Cryptify and puts a
-      // download link in the HTML body.
-      const envelope = await pg!.email.createEnvelope({
-        sealed,
+      // Delegate encryption to popup — popup creates its own pg instance,
+      // renders Yivi QR, encrypts, and returns the envelope
+      const result = await openCryptoPopup({
+        operation: "encrypt",
+        config: {
+          pkgUrl: PKG_URL!,
+          cryptifyUrl: CRYPTIFY_URL,
+          headers: PG_CLIENT_HEADER,
+        },
+        mimeDataBase64: toBase64(mimeData),
+        recipients: serializedRecipients,
+        senderEmail: from,
         from: details.from,
         websiteUrl: POSTGUARD_WEBSITE_URL,
-      });
+      }) as EncryptPopupResult;
 
-      // Only attach the encrypted file if it's under 5 MB.
-      // Larger payloads are already uploaded to Cryptify with a download link in the HTML.
+      // Only attach the encrypted file if it's under 5 MB
       const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
-      if (envelope.attachment.size <= MAX_ATTACHMENT_SIZE) {
-        await browser.compose.addAttachment(tab.id, { file: envelope.attachment });
+      if (result.attachmentSize <= MAX_ATTACHMENT_SIZE) {
+        const attBytes = fromBase64(result.attachmentBase64);
+        const attFile = new File([attBytes as BlobPart], "postguard.encrypted", {
+          type: "application/postguard; charset=utf-8",
+        });
+        await browser.compose.addAttachment(tab.id, { file: attFile });
       }
 
       // Store MIME data for sent copy
@@ -376,9 +454,9 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       // Replace body and subject
       resolve({
         details: {
-          subject: envelope.subject,
-          body: envelope.htmlBody,
-          plainTextBody: envelope.plainTextBody,
+          subject: result.subject,
+          body: result.htmlBody,
+          plainTextBody: result.plainTextBody,
         },
       });
     } catch (e) {
@@ -564,94 +642,15 @@ async function handlePolicyEditorDone(
   ).catch(() => {});
 }
 
-// --- Yivi popup flow ---
-
-export async function createYiviPopup(
-  con: AttributeCon,
-  sort: KeySort,
-  hints?: AttributeCon,
-  senderId?: string
-): Promise<string> {
-  const popup = await browser.windows.create({
-    url: "pages/yivi-popup/yivi-popup.html",
-    type: "popup",
-    height: 700,
-    width: 620,
-  });
-
-  const popupId = popup.id;
-  await browser.windows.update(popupId, {
-    drawAttention: true,
-    focused: true,
-  });
-
-  const data: PopupData = {
-    hostname: PKG_URL!,
-    header: PG_CLIENT_HEADER,
-    con,
-    sort,
-    hints,
-    senderId,
-  };
-
-  const jwtPromise = new Promise<string>((resolve, reject) => {
-    pendingYiviPopups.set(popupId, { data, resolve, reject });
-  });
-
-  const closeListener = (closedId: number) => {
-    if (closedId === popupId) {
-      const pending = pendingYiviPopups.get(popupId);
-      if (pending) {
-        pending.reject(new Error("Yivi popup closed"));
-        pendingYiviPopups.delete(popupId);
-      }
-      browser.windows.onRemoved.removeListener(closeListener);
-    }
-  };
-  browser.windows.onRemoved.addListener(closeListener);
-
-  return keepAlive(
-    "yivi-session",
-    jwtPromise.finally(() => {
-      browser.windows.onRemoved.removeListener(closeListener);
-    })
-  ) as Promise<string>;
-}
-
-async function handleYiviPopupInit(windowId: number | undefined) {
-  if (windowId == null) return null;
-  const pending = pendingYiviPopups.get(windowId);
-  if (!pending) return null;
-  return pending.data;
-}
-
-async function handleYiviPopupDone(
-  windowId: number | undefined,
-  jwt: string
-) {
-  if (windowId == null) return;
-  const pending = pendingYiviPopups.get(windowId);
-  if (!pending) return;
-
-  pending.resolve(jwt);
-  pendingYiviPopups.delete(windowId);
-}
-
 // --- Decrypt message ---
 
 async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; error?: string }> {
   console.log("[PostGuard] Decrypt requested for message:", messageId);
 
-  if (!pg) {
-    console.error("[PostGuard] SDK not initialized");
-    notifyError("startupError");
-    return { ok: false, error: "startupError" };
-  }
-
   try {
     const msg = await browser.messages.get(messageId);
 
-    // Extract ciphertext using SDK
+    // Extract ciphertext using SDK email helpers
     const attachments = await browser.messages.listAttachments(messageId);
     const attData = await Promise.all(
       attachments.map(async (att) => {
@@ -684,21 +683,20 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
     // Find our email among recipients
     const myAddresses = [...msg.recipients, ...msg.ccList].map(toEmail);
 
-    // Decrypt using SDK: open sealed data, then decrypt with session callback
-    const opened = pg.open({ data: ciphertext });
-    const result = await opened.decrypt({
-      recipient: myAddresses[0],
-      session: async ({ con, sort, hints, senderId }) => {
-        return createYiviPopup(
-          con as AttributeCon,
-          sort as KeySort,
-          hints as AttributeCon | undefined,
-          senderId
-        );
+    // Delegate decryption to popup — popup creates its own pg instance,
+    // renders Yivi QR, decrypts, and returns the plaintext + sender
+    const result = await openCryptoPopup({
+      operation: "decrypt",
+      config: {
+        pkgUrl: PKG_URL!,
+        cryptifyUrl: CRYPTIFY_URL,
+        headers: PG_CLIENT_HEADER,
       },
-    }) as DecryptDataResult;
+      ciphertextBase64: toBase64(ciphertext),
+      recipientEmail: myAddresses[0],
+    }) as DecryptPopupResult;
 
-    const plaintext = new TextDecoder().decode(result.plaintext);
+    const plaintext = new TextDecoder().decode(fromBase64(result.plaintextBase64));
 
     // Build badges from sender identity (FriendlySender format)
     const sender = result.sender;

@@ -32,9 +32,9 @@ const env = loadEnv();
 // Build-time environment variables with defaults
 const envDefine = {
   "process.env.NODE_ENV": '"production"',
-  "process.env.PKG_URL": JSON.stringify(env.PKG_URL || "https://postguard.staging.yivi.app/pkg"),
+  "process.env.PKG_URL": JSON.stringify(env.PKG_URL || "https://staging.postguard.eu/pkg"),
   "process.env.CRYPTIFY_URL": JSON.stringify(env.CRYPTIFY_URL || "https://fileshare.staging.postguard.eu"),
-  "process.env.POSTGUARD_WEBSITE_URL": JSON.stringify(env.POSTGUARD_WEBSITE_URL || "https://postguard.staging.yivi.app"),
+  "process.env.POSTGUARD_WEBSITE_URL": JSON.stringify(env.POSTGUARD_WEBSITE_URL || "https://staging.postguard.eu"),
 };
 
 // In release builds, strip console.log calls (marked pure so minification
@@ -83,9 +83,10 @@ const pgExternals = [
 const extensionPlugins = {
   name: "extension-plugins",
   setup(build) {
-    // Remap @e4a/pg-wasm to custom loader (kept external)
+    // Remap @e4a/pg-wasm to custom loader (kept external).
+    // Use absolute extension path so it resolves correctly from any script location.
     build.onResolve({ filter: /^@e4a\/pg-wasm$/ }, () => ({
-      path: "./pg-wasm/load.js",
+      path: "/pg-wasm/load.js",
       external: true,
     }));
     // Shim eventsource (unused Node polyfill)
@@ -154,14 +155,15 @@ const policyEditorBuild = {
   ...releaseOptions,
 };
 
-// Yivi popup
+// Yivi popup (ESM format for dynamic WASM import via PostGuard SDK)
 const yiviPopupBuild = {
   entryPoints: ["src/pages/yivi-popup/yivi-popup.ts"],
   bundle: true,
   outfile: path.join(outdir, "pages/yivi-popup/yivi-popup.js"),
-  format: "iife",
+  format: "esm",
   target: "firefox128",
   platform: "browser",
+  define: envDefine,
   external: pgExternals,
   plugins: [extensionPlugins],
   ...releaseOptions,

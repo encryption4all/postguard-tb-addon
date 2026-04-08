@@ -33,6 +33,8 @@ declare namespace browser {
     function create(createData: Record<string, unknown>): Promise<{ id: number }>;
     function update(windowId: number, updateInfo: Record<string, unknown>): Promise<void>;
     function get(windowId: number): Promise<Record<string, unknown>>;
+    function getCurrent(): Promise<{ id: number }>;
+    function remove(windowId: number): Promise<void>;
     const onRemoved: {
       addListener(callback: (windowId: number) => void): void;
       removeListener(callback: (windowId: number) => void): void;
@@ -99,8 +101,8 @@ declare namespace browser {
     function query(queryInfo: Record<string, unknown>): Promise<{ messages: MessageHeader[] }>;
     function list(folder: MailFolder): Promise<{ messages: MessageHeader[] }>;
     function archive(messageIds: number[]): Promise<void>;
-    // browser.messages.import is a reserved word, accessed as messages["import"]
-    function import_(file: File, destination: MailFolder): Promise<MessageHeader>;
+    // import/delete are reserved words — accessed via (browser.messages as any).import() at runtime
+    function import_(file: File, destination: MailFolder | string): Promise<MessageHeader>;
     function delete_(messageIds: number[], skipTrash?: boolean): Promise<void>;
   }
 
@@ -112,6 +114,7 @@ declare namespace browser {
     date: Date;
     author: string;
     recipients: string[];
+    ccList: string[];
     subject: string;
     folder: MailFolder;
     read: boolean;
@@ -133,6 +136,7 @@ declare namespace browser {
   }
 
   interface MailFolder {
+    id: string;
     accountId: string;
     path: string;
     name?: string;
@@ -170,6 +174,7 @@ declare namespace browser {
     id: string;
     name: string;
     type: string;
+    rootFolder?: MailFolder;
     folders: MailFolder[];
     identities: Identity[];
   }
@@ -185,7 +190,8 @@ declare namespace browser {
   }
 
   namespace folders {
-    function create(parent: MailAccount | MailFolder, name: string): Promise<MailFolder>;
+    function create(parent: MailAccount | MailFolder | string, name: string): Promise<MailFolder>;
+    function getSubFolders(folderOrId: MailFolder | string): Promise<MailFolder[]>;
   }
 
   namespace storage {
@@ -210,7 +216,8 @@ declare namespace browser {
   }
 
   namespace mailTabs {
-    function setSelectedMessages(messageIds: number[]): Promise<void>;
+    function query(queryInfo: Record<string, unknown>): Promise<Array<{ id: number }>>;
+    function setSelectedMessages(tabId: number, messageIds: number[]): Promise<void>;
   }
 
   namespace notifications {
@@ -231,6 +238,7 @@ declare namespace process {
   const env: {
     NODE_ENV: string;
     PKG_URL: string;
+    CRYPTIFY_URL: string;
     POSTGUARD_WEBSITE_URL: string;
   };
 }

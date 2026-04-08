@@ -1,36 +1,59 @@
 /// <reference path="../../types/thunderbird.d.ts" />
 export {};
 
-import { runYiviSession } from "@e4a/pg-js";
+import { PostGuard } from "@e4a/pg-js";
+import type { DecryptDataResult } from "@e4a/pg-js";
+import { toBase64, fromBase64 } from "../../lib/encoding";
+import type {
+  CryptoPopupInitData,
+  EncryptPopupData,
+  DecryptPopupData,
+} from "../../lib/types";
 
-interface YiviPopupData {
-  hostname: string;
-  header: Record<string, string>;
-  con: Array<{ t: string; v?: string }>;
-  sort: string;
-  hints?: Array<{ t: string; v: string }>;
-  senderId?: string;
-}
+// console.log calls are stripped in release builds by esbuild's `pure` option
 
 const titleEl = document.getElementById("title") as HTMLElement;
 const subtitleEl = document.getElementById("subtitle") as HTMLElement;
 const senderEl = document.getElementById("sender-info") as HTMLElement;
-const hintsEl = document.getElementById("hints") as HTMLElement;
 const errorEl = document.getElementById("error") as HTMLElement;
 const loadingEl = document.getElementById("loading") as HTMLElement;
 
 async function init() {
-  const data = (await browser.runtime.sendMessage({
-    type: "yiviPopupInit",
-  })) as YiviPopupData | null;
+  console.log("[PostGuard Popup]","init() called");
 
-  if (!data) {
+  // Get our own window ID — used in all messages so background can look up our pending entry
+  let windowId: number;
+  try {
+    const win = await browser.windows.getCurrent();
+    windowId = win.id;
+    console.log("[PostGuard Popup]","windowId:", windowId);
+  } catch (e) {
+    console.log("[PostGuard Popup]","windows.getCurrent() failed:", e);
+    showError("Failed to get window ID.");
+    return;
+  }
+
+  let data: CryptoPopupInitData | null;
+  try {
+    data = (await browser.runtime.sendMessage({
+      type: "cryptoPopupInit",
+      windowId,
+    })) as CryptoPopupInitData | null;
+    console.log("[PostGuard Popup]","cryptoPopupInit response:", data ? data.operation : data);
+  } catch (e) {
+    console.log("[PostGuard Popup]","sendMessage(cryptoPopupInit) threw:", e);
     showError("Failed to initialize session.");
     return;
   }
 
-  // Update UI
-  if (data.sort === "Decryption") {
+  if (!data) {
+    console.log("[PostGuard Popup]","data is null/undefined — no pending entry found in background for windowId:", windowId);
+    showError("Failed to initialize session.");
+    return;
+  }
+
+  // Update UI based on operation
+  if (data.operation === "decrypt") {
     titleEl.textContent = browser.i18n.getMessage("displayMessageTitle");
     subtitleEl.textContent = browser.i18n.getMessage("displayMessageHeading");
   } else {
@@ -38,58 +61,105 @@ async function init() {
     subtitleEl.textContent = browser.i18n.getMessage("displayMessageQrPrefix");
   }
 
-  if (data.senderId) {
-    senderEl.innerHTML = `From: <strong>${escapeHtml(data.senderId)}</strong>`;
-    senderEl.style.display = "block";
-  }
+  loadingEl.style.display = "none";
 
-  if (data.hints) {
-    for (const hint of data.hints) {
-      const badge = document.createElement("span");
-      badge.className = "hint-badge";
-      const label =
-        browser.i18n.getMessage(hint.t) || hint.t.split(".").pop() || hint.t;
-      badge.textContent = hint.v ? `${label}: ${hint.v}` : label;
-      hintsEl.appendChild(badge);
-    }
-  }
+  // Create PostGuard instance for this popup
+  const pg = new PostGuard(data.config);
 
   try {
-    loadingEl.style.display = "none";
-
-    // Use the SDK to run the full Yivi session (QR code + polling + JWT)
-    const jwt = await runYiviSession({
-      pkgUrl: data.hostname,
-      element: "#yivi-web-form",
-      con: data.con,
-      sort: data.sort as "Signing" | "Decryption",
-      headers: data.header,
-    });
-
-    console.log("[PostGuard] JWT received, sending to background");
-    await browser.runtime.sendMessage({ type: "yiviPopupDone", jwt });
+    if (data.operation === "encrypt") {
+      await handleEncrypt(pg, data, windowId);
+    } else {
+      await handleDecrypt(pg, data, windowId);
+    }
 
     // Auto-close after a short delay
-    setTimeout(async () => {
-      const win = await browser.windows.getCurrent();
-      browser.windows.remove(win.id);
-    }, 750);
+    setTimeout(() => browser.windows.remove(windowId), 750);
   } catch (e) {
-    console.error("[PostGuard] Yivi session error:", e);
-    showError(e instanceof Error ? e.message : "Yivi session failed.");
+    console.error("[PostGuard] Crypto popup error:", e);
+    const message = e instanceof Error ? e.message : "Operation failed.";
+    await browser.runtime.sendMessage({
+      type: "cryptoPopupError",
+      windowId,
+      error: message,
+    });
+    showError(message);
   }
+}
+
+async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: number) {
+  const mimeData = fromBase64(data.mimeDataBase64);
+
+  // Rebuild typed recipients from serialized data
+  const recipients = data.recipients.map((r) => {
+    if (r.type === "customPolicy" && r.policy) {
+      return pg.recipient.withPolicy(r.email, r.policy);
+    }
+    if (r.type === "emailDomain") {
+      return pg.recipient.emailDomain(r.email);
+    }
+    return pg.recipient.email(r.email);
+  });
+
+  // Encrypt with element-based Yivi signing
+  const sealed = pg.encrypt({
+    sign: pg.sign.yivi({
+      element: "#yivi-web-form",
+      senderEmail: data.senderEmail,
+    }),
+    recipients,
+    data: mimeData,
+  });
+
+  // Create encrypted email envelope
+  const envelope = await pg.email.createEnvelope({
+    sealed,
+    from: data.from,
+    websiteUrl: data.websiteUrl,
+  });
+
+  // Read the attachment File into base64
+  const attBytes = new Uint8Array(await envelope.attachment.arrayBuffer());
+
+  await browser.runtime.sendMessage({
+    type: "cryptoPopupDone",
+    windowId,
+    result: {
+      operation: "encrypt",
+      subject: envelope.subject,
+      htmlBody: envelope.htmlBody,
+      plainTextBody: envelope.plainTextBody,
+      attachmentBase64: toBase64(attBytes),
+      attachmentSize: attBytes.byteLength,
+    },
+  });
+}
+
+async function handleDecrypt(pg: PostGuard, data: DecryptPopupData, windowId: number) {
+  const ciphertext = fromBase64(data.ciphertextBase64);
+
+  // Decrypt with element-based Yivi
+  const opened = pg.open({ data: ciphertext });
+  const result = (await opened.decrypt({
+    element: "#yivi-web-form",
+    recipient: data.recipientEmail,
+  })) as DecryptDataResult;
+
+  await browser.runtime.sendMessage({
+    type: "cryptoPopupDone",
+    windowId,
+    result: {
+      operation: "decrypt",
+      plaintextBase64: toBase64(result.plaintext),
+      sender: result.sender,
+    },
+  });
 }
 
 function showError(msg: string) {
   loadingEl.style.display = "none";
   errorEl.textContent = msg;
   errorEl.style.display = "block";
-}
-
-function escapeHtml(str: string): string {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
 }
 
 init();

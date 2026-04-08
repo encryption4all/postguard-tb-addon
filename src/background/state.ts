@@ -1,3 +1,7 @@
+import type { Policy, AttributeCon, Badge } from "../lib/types";
+
+export type { Policy, AttributeCon };
+
 export interface ComposeTabState {
   encrypt: boolean;
   policy?: Policy;
@@ -6,29 +10,6 @@ export interface ComposeTabState {
   signWindowId?: number;
   newMsgId?: number;
   sentMimeData?: Uint8Array;
-}
-
-export type Policy = Record<string, AttributeCon>;
-export type AttributeCon = AttributeRequest[];
-export interface AttributeRequest {
-  t: string;
-  v: string;
-}
-
-export type KeySort = "Decryption" | "Signing";
-
-export interface PopupData {
-  hostname: string;
-  header: Record<string, string>;
-  con: AttributeCon;
-  sort: KeySort;
-  hints?: AttributeCon;
-  senderId?: string;
-}
-
-export interface Badge {
-  type: string;
-  value: string;
 }
 
 // Per-compose-tab state
