@@ -51,19 +51,12 @@ function copyStatic() {
   cpSync("manifest.json", path.join(outdir, "manifest.json"));
   cpSync("public", outdir, { recursive: true });
 
-  // Copy pg-wasm WASM binary and JS bindings for manual loading.
-  // public/pg-wasm/load.js (our custom loader) is already copied above.
-  // pg-wasm >=0.5 puts bundler files under bundler/ subdirectory
-  const pgWasmPkg = "node_modules/@e4a/pg-wasm";
-  const pgWasmSrc = existsSync(path.join(pgWasmPkg, "bundler"))
-    ? path.join(pgWasmPkg, "bundler")
-    : pgWasmPkg;
-  const pgWasmDest = path.join(outdir, "pg-wasm");
-  mkdirSync(pgWasmDest, { recursive: true });
-  for (const f of ["index_bg.js", "index_bg.wasm"]) {
-    if (existsSync(path.join(pgWasmSrc, f))) {
-      cpSync(path.join(pgWasmSrc, f), path.join(pgWasmDest, f));
-    }
+  // Copy pg-wasm binary next to each script that uses PostGuard.
+  // pg-js resolves it via fetch(new URL('index_bg.wasm', import.meta.url)).
+  const pgJsWasm = "node_modules/@e4a/pg-js/dist/index_bg.wasm";
+  if (existsSync(pgJsWasm)) {
+    cpSync(pgJsWasm, path.join(outdir, "index_bg.wasm"));
+    cpSync(pgJsWasm, path.join(outdir, "pages/yivi-popup/index_bg.wasm"));
   }
 }
 
@@ -73,33 +66,6 @@ copyStatic();
 const pgExternals = [
   "@transcend-io/conflux",
 ];
-
-// esbuild plugin to remap @e4a/pg-wasm to our custom loader and shim Node-only packages.
-// - pg-wasm: The SDK dynamically imports @e4a/pg-wasm, but Thunderbird can't resolve
-//   bare specifiers at runtime. We remap it to ./pg-wasm/load.js (our custom WASM loader)
-//   and keep it external so import.meta.url resolves correctly inside load.js.
-// - eventsource: yivi-client imports this Node SSE polyfill at the top level,
-//   but we disable SSE in our config so it's never used at runtime.
-const extensionPlugins = {
-  name: "extension-plugins",
-  setup(build) {
-    // Remap @e4a/pg-wasm to custom loader (kept external).
-    // Use absolute extension path so it resolves correctly from any script location.
-    build.onResolve({ filter: /^@e4a\/pg-wasm$/ }, () => ({
-      path: "/pg-wasm/load.js",
-      external: true,
-    }));
-    // Shim eventsource (unused Node polyfill)
-    build.onResolve({ filter: /^eventsource$/ }, () => ({
-      path: "eventsource",
-      namespace: "shim",
-    }));
-    build.onLoad({ filter: /.*/, namespace: "shim" }, () => ({
-      contents: "export default class {}; export class EventSource {}",
-      loader: "js",
-    }));
-  },
-};
 
 // Background script
 const backgroundBuild = {
@@ -111,7 +77,7 @@ const backgroundBuild = {
   platform: "browser",
   define: envDefine,
   external: pgExternals,
-  plugins: [extensionPlugins],
+
   ...releaseOptions,
 };
 
@@ -165,7 +131,7 @@ const yiviPopupBuild = {
   platform: "browser",
   define: envDefine,
   external: pgExternals,
-  plugins: [extensionPlugins],
+
   ...releaseOptions,
 };
 
