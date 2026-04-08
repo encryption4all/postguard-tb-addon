@@ -1,27 +1,9 @@
 // Thunderbird-specific utility functions.
 // Armor, MIME, and policy utilities are now in @e4a/pg-js.
 
-import type { AttributeCon, AttributeRequest } from "./types";
-
 export function toEmail(identity: string): string {
   const match = identity.match(/^(.*)<(.*)>$/);
   return (match ? match[2] : identity).toLowerCase();
-}
-
-export async function hashCon(con: AttributeCon): Promise<string> {
-  const sorted = [...con].sort(
-    (a: AttributeRequest, b: AttributeRequest) =>
-      a.t.localeCompare(b.t) || (a.v ?? "").localeCompare(b.v ?? "")
-  );
-  return hashString(JSON.stringify(sorted));
-}
-
-export async function hashString(message: string): Promise<string> {
-  const data = new TextEncoder().encode(message);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash), (b) =>
-    b.toString(16).padStart(2, "0")
-  ).join("");
 }
 
 export function typeToImage(t: string): string {
