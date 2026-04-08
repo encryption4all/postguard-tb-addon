@@ -8,15 +8,17 @@ const isWatch = process.argv.includes("--watch");
 const outdir = "dist";
 
 // Build-time environment variables (set via .env file, see .env.example).
-// Always define all keys so `process.env.*` never appears in output —
-// `process` does not exist in the browser runtime.
+const requiredEnvKeys = ["PKG_URL", "CRYPTIFY_URL", "POSTGUARD_WEBSITE_URL"];
+const missing = requiredEnvKeys.filter((key) => !process.env[key]);
+if (missing.length > 0) {
+  throw new Error(`Missing required environment variables: ${missing.join(", ")}. See .env.example`);
+}
+
 const envDefine = {
   "process.env.NODE_ENV": '"production"',
 };
-for (const key of ["PKG_URL", "CRYPTIFY_URL", "POSTGUARD_WEBSITE_URL"]) {
-  envDefine[`process.env.${key}`] = process.env[key]
-    ? JSON.stringify(process.env[key])
-    : "undefined";
+for (const key of requiredEnvKeys) {
+  envDefine[`process.env.${key}`] = JSON.stringify(process.env[key]);
 }
 
 // In release builds, strip console.log calls (marked pure so minification
