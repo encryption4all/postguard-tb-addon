@@ -20,7 +20,7 @@ export interface CryptoPopupConfig {
 }
 
 export interface SerializedRecipient {
-  type: "email" | "emailDomain" | "customPolicy";
+  type: "email" | "emailDomain";
   email: string;
   policy?: { t: string; v: string }[];
 }

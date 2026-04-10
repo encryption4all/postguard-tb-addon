@@ -400,7 +400,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         const id = toEmail(r);
         if (customPolicies && customPolicies[id]) {
           return {
-            type: "customPolicy" as const,
+            type: "email" as const,
             email: id,
             policy: customPolicies[id].map(({ t, v }) =>
               t === EMAIL_ATTRIBUTE_TYPE ? { t, v: v.toLowerCase() } : { t, v }

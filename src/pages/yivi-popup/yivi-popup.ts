@@ -92,13 +92,17 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
 
   // Rebuild typed recipients from serialized data
   const recipients = data.recipients.map((r) => {
-    if (r.type === "customPolicy" && r.policy) {
-      return pg.recipient.withPolicy(r.email, r.policy);
+    const base = r.type === "emailDomain"
+      ? pg.recipient.emailDomain(r.email)
+      : pg.recipient.email(r.email);
+    if (r.policy) {
+      for (const attr of r.policy) {
+        if (attr.t !== "pbdf.sidn-pbdf.email.email") {
+          base.extraAttribute(attr.t, attr.v);
+        }
+      }
     }
-    if (r.type === "emailDomain") {
-      return pg.recipient.emailDomain(r.email);
-    }
-    return pg.recipient.email(r.email);
+    return base;
   });
 
   // Encrypt with element-based Yivi signing
