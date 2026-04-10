@@ -92,6 +92,10 @@ jobs:
 
       - name: Build extension
         run: npm run build
+        env:
+          PKG_URL: ${{ vars.PKG_URL || 'https://pkg.postguard.eu' }}
+          CRYPTIFY_URL: ${{ vars.CRYPTIFY_URL || 'https://storage.postguard.eu' }}
+          POSTGUARD_WEBSITE_URL: ${{ vars.POSTGUARD_WEBSITE_URL || 'https://postguard.eu' }}
 
       - name: Package .xpi
         run: |

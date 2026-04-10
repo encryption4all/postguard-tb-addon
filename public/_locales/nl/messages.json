@@ -115,5 +115,11 @@
   },
   "startupError": {
     "message": "PostGuard kon niet worden gestart. Versleuteling en ontsleuteling werken niet totdat het probleem is opgelost."
+  },
+  "sentCopyError": {
+    "message": "Het opslaan van de verzonden kopie van je versleutelde bericht is mislukt."
+  },
+  "decryptingButton": {
+    "message": "Ontsleutelen..."
   }
 }

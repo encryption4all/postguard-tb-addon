@@ -1,29 +1,19 @@
 /// <reference path="../types/thunderbird.d.ts" />
 
+import { buildMime, extractCiphertext, injectMimeHeaders } from "@e4a/pg-js";
 import { composeTabs, decryptedMessages } from "./state";
-import type { ComposeTabState } from "./state";
-import {
-  fetchPublicKey,
-  fetchVerificationKey,
-  setClientHeader,
-  PKG_URL,
-} from "../lib/pkg-client";
-import { toEmail, EMAIL_ATTRIBUTE_TYPE } from "../lib/utils";
-import { getSigningKeys } from "../lib/pkg-client";
-import { buildInnerMime, injectMimeHeaders } from "../lib/mime-builder";
-import { getPlaceholderHtml, getPlaceholderText } from "../lib/placeholder";
-import { sealData, setSealStream } from "../lib/encryption";
-import { setStreamUnsealer } from "../lib/decryption";
-import { findHtmlBody, extractArmoredPayload } from "../lib/utils";
-import { getUSK } from "../lib/pkg-client";
-import { typeToImage } from "../lib/utils";
+import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
+import { toBase64, fromBase64 } from "../lib/encoding";
+import { toEmail, EMAIL_ATTRIBUTE_TYPE, findHtmlBody } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
-// import {
-//   checkLocalJwt as checkLocalJwtFromStore,
-//   storeLocalJwt as storeLocalJwtFromStore,
-//   cleanUpJwts,
-// } from "../lib/jwt-store";
-import type { Policy, AttributeCon, KeySort, PopupData } from "../lib/types";
+import type {
+  Policy,
+  SerializedRecipient,
+  CryptoPopupInitData,
+  CryptoPopupResult,
+  EncryptPopupResult,
+  DecryptPopupResult,
+} from "../lib/types";
 
 const POSTGUARD_SUBJECT = "PostGuard Encrypted Email";
 
@@ -35,21 +25,12 @@ function notifyError(messageKey: string) {
   });
 }
 
-const { version: tbVersion } = await browser.runtime.getBrowserInfo();
-const extVersion = browser.runtime.getManifest().version;
+// Populated after listeners are registered (see bottom of file).
+// All code that uses this runs in response to user actions, so it is
+// always set by the time it is read.
+export let PG_CLIENT_HEADER: Record<string, string> = {};
 
-export const PG_CLIENT_HEADER = {
-  "X-PostGuard-Client-Version": `Thunderbird,${tbVersion},pg4tb,${extVersion}`,
-};
-
-console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
-
-setClientHeader(PG_CLIENT_HEADER);
-
-// --- Module-level state (declared before listeners to avoid TDZ) ---
-let pgWasm: any = null;
-let pk: string | null = null;
-let vk: string | null = null;
+// --- Module-level state ---
 
 // Pending popup tracking maps
 const pendingPolicyEditors = new Map<
@@ -63,38 +44,16 @@ const pendingPolicyEditors = new Map<
   }
 >();
 
-const pendingYiviPopups = new Map<
+const pendingCryptoPopups = new Map<
   number,
   {
-    data: PopupData;
-    resolve: (jwt: string) => void;
+    data: CryptoPopupInitData;
+    resolve: (result: CryptoPopupResult) => void;
     reject: (err: Error) => void;
   }
 >();
 
-// const checkLocalJwt = checkLocalJwtFromStore;
-// const storeLocalJwt = storeLocalJwtFromStore;
-
-// --- Load pg-wasm and fetch PKG keys on startup ---
-console.log("[PostGuard] Loading pg-wasm and fetching PKG keys...");
-
-// Use indirect dynamic import to prevent esbuild from resolving it
-const pgWasmPath = "./pg-wasm/load.js";
-const modPromise = import(/* @vite-ignore */ pgWasmPath).then((mod: any) => {
-  setSealStream(mod.sealStream as Parameters<typeof setSealStream>[0]);
-  setStreamUnsealer(mod.StreamUnsealer);
-  console.log("[PostGuard] pg-wasm loaded");
-  return mod;
-}).catch((e: Error) => {
-  console.error("[PostGuard] Failed to load pg-wasm:", e);
-  return null;
-});
-
-const pkPromise = fetchPublicKey();
-const vkPromise = fetchVerificationKey();
-
 // --- Register message display script ---
-// A restarting background will try to re-register — catch the error.
 browser.scripting.messageDisplay
   .registerScripts([
     {
@@ -106,17 +65,12 @@ browser.scripting.messageDisplay
   .catch(console.info);
 
 // --- Register ALL event listeners BEFORE heavy awaits ---
-// This ensures popups/content scripts can communicate with the background
-// even while pg-wasm and PKG keys are still loading.
 
 browser.runtime.onMessage.addListener(
   (message: unknown, sender: browser.MessageSender) => {
     if (!message || typeof message !== "object") return false;
     const msg = message as Record<string, unknown>;
 
-    // For compose-action popups, sender.tab is the popup tab itself,
-    // not the compose tab. We need to find the actual compose tab
-    // by querying for compose tabs in the sender's window.
     const resolveComposeTabId = async (): Promise<number | undefined> => {
       if (!sender.tab?.windowId) return undefined;
       const tabs = await browser.tabs.query({
@@ -128,12 +82,6 @@ browser.runtime.onMessage.addListener(
 
     switch (msg.type) {
       case "queryMessageState":
-        console.log("[PostGuard] queryMessageState sender:", JSON.stringify({
-          tabId: sender.tab?.id,
-          tabType: sender.tab?.type,
-          windowId: sender.tab?.windowId,
-          url: sender.url,
-        }));
         return handleQueryMessageState(sender.tab?.id);
       case "toggleEncryption":
         return resolveComposeTabId().then((id) => handleToggleEncryption(id));
@@ -144,19 +92,27 @@ browser.runtime.onMessage.addListener(
       case "openSignEditor":
         return handleOpenPolicyEditor(sender.tab?.windowId, true);
       case "policyEditorInit":
-        return handlePolicyEditorInit(sender.tab?.windowId);
+        return Promise.resolve(handlePolicyEditorInit(sender.tab?.windowId));
       case "policyEditorDone":
         return handlePolicyEditorDone(
           sender.tab?.windowId,
           msg.policy as Policy
         );
-      case "yiviPopupInit":
-        return handleYiviPopupInit(sender.tab?.windowId);
-      case "yiviPopupDone":
-        return handleYiviPopupDone(
-          sender.tab?.windowId,
-          msg.jwt as string
-        );
+      case "cryptoPopupInit": {
+        // Must return a Promise — synchronous returns are not forwarded as responses in TB/Firefox
+        const initWindowId = msg.windowId as number | undefined ?? sender.tab?.windowId;
+        return Promise.resolve(handleCryptoPopupInit(initWindowId));
+      }
+      case "cryptoPopupDone":
+        return Promise.resolve(handleCryptoPopupDone(
+          msg.windowId as number | undefined ?? sender.tab?.windowId,
+          msg.result as CryptoPopupResult
+        ));
+      case "cryptoPopupError":
+        return Promise.resolve(handleCryptoPopupError(
+          msg.windowId as number | undefined ?? sender.tab?.windowId,
+          msg.error as string
+        ));
       case "decryptMessage":
         return handleDecryptMessage(msg.messageId as number);
       default:
@@ -174,30 +130,32 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
   try {
     for (const msg of sendInfo.messages) {
       if (await isPGEncrypted(msg.id)) {
-        // Import plaintext copy to local sent folder
         const localFolder = await getOrCreateLocalFolder("PostGuard Sent");
         if (localFolder) {
           const file = new File([state.sentMimeData as BlobPart], "sent.eml", {
             type: "text/plain",
           });
-          const localMsg = await (browser.messages as any).import(
+          const localMsg = await browser.messages.import(
             file,
             localFolder.id
           );
-
-          // Move to the same folder as the sent ciphertext
-          await browser.messages.move([localMsg.id], msg.folder.id as any);
-
-          // Delete the ciphertext from sent
-          await (browser.messages as any).delete([msg.id], true);
+          await browser.messages.move([localMsg.id], msg.folder.id);
+          await browser.messages.delete([msg.id], true);
         }
       }
     }
   } catch (e) {
     console.error("[PostGuard] Failed to manage sent copy:", e);
+    notifyError("sentCopyError");
   } finally {
-    // Clean up compose tab state
     composeTabs.delete(tab.id);
+  }
+});
+
+// Clean up decryptedMessages when messages are deleted
+browser.messages.onDeleted.addListener((deletedMessages) => {
+  for (const msg of deletedMessages.messages) {
+    decryptedMessages.delete(msg.id);
   }
 });
 
@@ -212,31 +170,6 @@ browser.windows.onCreated.addListener(async (window) => {
     }
   }
 });
-
-// browser.alarms.create("jwt-cleanup", { periodInMinutes: 10 });
-// browser.alarms.onAlarm.addListener((alarm) => {
-//   if (alarm.name === "jwt-cleanup") {
-//     cleanUpJwts().catch(console.error);
-//   }
-// });
-
-// --- Now await the heavy async loading ---
-
-const [_pgWasm, _pk, _vk] = await Promise.all([
-  modPromise,
-  pkPromise.catch((e: Error) => { console.error("[PostGuard] PK fetch failed:", e); return null; }),
-  vkPromise.catch((e: Error) => { console.error("[PostGuard] VK fetch failed:", e); return null; }),
-]);
-pgWasm = _pgWasm;
-pk = _pk as string | null;
-vk = _vk as string | null;
-
-if (pk) console.log("[PostGuard] Master public key loaded");
-if (vk) console.log("[PostGuard] Verification key loaded");
-
-if (!pgWasm || !pk || !vk) {
-  notifyError("startupError");
-}
 
 // --- Compose Action: toggle encryption per tab ---
 
@@ -255,6 +188,17 @@ async function updateComposeActionIcon(tabId: number) {
   });
 }
 
+// --- Deferred initialization (after all listeners are registered) ---
+
+const { version: tbVersion } = await browser.runtime.getBrowserInfo();
+const extVersion = browser.runtime.getManifest().version;
+
+PG_CLIENT_HEADER = {
+  "X-PostGuard-Client-Version": `Thunderbird,${tbVersion},pg4tb,${extVersion}`,
+};
+
+console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
+
 // Initialize state for any existing compose tabs on startup
 const existingTabs = await browser.tabs.query({ type: "messageCompose" });
 for (const tab of existingTabs) {
@@ -268,20 +212,9 @@ for (const tab of existingTabs) {
 async function shouldEncrypt(tabId: number): Promise<boolean> {
   try {
     const details = await browser.compose.getComposeDetails(tabId);
-    console.log("[PostGuard] shouldEncrypt check:", {
-      tabId,
-      type: details.type,
-      relatedMessageId: details.relatedMessageId,
-      subject: details.subject,
-    });
     if (details.type === "reply" && details.relatedMessageId) {
       const encrypted = await isPGEncrypted(details.relatedMessageId);
       const wasEncrypted = !encrypted && await wasPGEncrypted(details.relatedMessageId);
-      console.log("[PostGuard] Reply to message:", {
-        relatedMessageId: details.relatedMessageId,
-        isPGEncrypted: encrypted,
-        wasPGEncrypted: wasEncrypted,
-      });
       return encrypted || wasEncrypted;
     }
   } catch (e) {
@@ -291,15 +224,13 @@ async function shouldEncrypt(tabId: number): Promise<boolean> {
 }
 
 async function isPGEncrypted(msgId: number): Promise<boolean> {
-  // Primary: check for encrypted attachment
   const attachments = await browser.messages.listAttachments(msgId);
   if (attachments.some((att) => att.name === "postguard.encrypted")) return true;
 
-  // Fallback: check for armor block in HTML body
   try {
     const full = await browser.messages.getFull(msgId);
     const bodyHtml = findHtmlBody(full);
-    if (bodyHtml && extractArmoredPayload(bodyHtml)) return true;
+    if (bodyHtml && bodyHtml.includes("-----BEGIN POSTGUARD MESSAGE-----")) return true;
   } catch {
     // ignore
   }
@@ -307,7 +238,7 @@ async function isPGEncrypted(msgId: number): Promise<boolean> {
   return false;
 }
 
-// --- Alarm keepalive for onBeforeSend (MV3 anti-termination pattern) ---
+// --- Alarm keepalive for onBeforeSend ---
 
 function keepAlive(name: string, promise: Promise<unknown>) {
   const listener = (alarm: { name: string }) => {
@@ -324,30 +255,88 @@ function keepAlive(name: string, promise: Promise<unknown>) {
   });
 }
 
+// --- Crypto popup: opens popup that owns encrypt/decrypt ---
+
+async function openCryptoPopup(data: CryptoPopupInitData): Promise<CryptoPopupResult> {
+  const { promise, resolve, reject } = Promise.withResolvers<CryptoPopupResult>();
+
+  const popup = await browser.windows.create({
+    url: "pages/yivi-popup/yivi-popup.html",
+    type: "popup",
+    height: 700,
+    width: 620,
+  });
+
+  const popupId = popup.id;
+
+  // Register IMMEDIATELY after create, before the popup script can send cryptoPopupInit
+  pendingCryptoPopups.set(popupId, { data, resolve, reject });
+
+  const closeListener = (closedId: number) => {
+    if (closedId === popupId) {
+      const pending = pendingCryptoPopups.get(popupId);
+      if (pending) {
+        pending.reject(new Error("Popup closed"));
+        pendingCryptoPopups.delete(popupId);
+      }
+      browser.windows.onRemoved.removeListener(closeListener);
+    }
+  };
+  browser.windows.onRemoved.addListener(closeListener);
+
+  await browser.windows.update(popupId, {
+    drawAttention: true,
+    focused: true,
+  });
+
+  return keepAlive("crypto-popup", promise) as Promise<CryptoPopupResult>;
+}
+
+function handleCryptoPopupInit(windowId: number | undefined) {
+  if (windowId == null) return null;
+  const pending = pendingCryptoPopups.get(windowId);
+  if (!pending) return null;
+  return pending.data;
+}
+
+function handleCryptoPopupDone(
+  windowId: number | undefined,
+  result: CryptoPopupResult
+) {
+  if (windowId == null) return;
+  const pending = pendingCryptoPopups.get(windowId);
+  if (!pending) return;
+  pending.resolve(result);
+  pendingCryptoPopups.delete(windowId);
+}
+
+function handleCryptoPopupError(
+  windowId: number | undefined,
+  error: string
+) {
+  if (windowId == null) return;
+  const pending = pendingCryptoPopups.get(windowId);
+  if (!pending) return;
+  pending.reject(new Error(error));
+  pendingCryptoPopups.delete(windowId);
+}
+
 // --- onBeforeSend: encryption hook ---
 
 async function handleBeforeSend(tab: { id: number }, details: any) {
   const state = composeTabs.get(tab.id);
   if (!state?.encrypt) return;
 
-  // BCC check
   if (details.bcc.length > 0) {
-    console.warn("[PostGuard] BCC not supported with encryption");
+    notifyError("composeBccWarning");
     return { cancel: true };
   }
 
-  // If policy editor is open, bring it to focus
   if (state.configWindowId) {
     await browser.windows.update(state.configWindowId, {
       drawAttention: true,
       focused: true,
     });
-    return { cancel: true };
-  }
-
-  if (!pk) {
-    console.error("[PostGuard] No public key available, cannot encrypt");
-    notifyError("encryptionError");
     return { cancel: true };
   }
 
@@ -359,13 +348,12 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
     try {
       const originalSubject = details.subject;
       const date = new Date();
-      const timestamp = Math.round(date.getTime() / 1000);
 
       // Build attachments list
       const composeAttachments = await browser.compose.listAttachments(tab.id);
       const attachmentData = await Promise.all(
         composeAttachments.map(async (att) => {
-          const file = await browser.compose.getAttachmentFile(att.id) as unknown as File;
+          const file = await browser.compose.getAttachmentFile(att.id);
           return {
             name: file.name,
             type: file.type,
@@ -391,99 +379,79 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         }
       }
 
-      // Build inner MIME
-      const mimeData = buildInnerMime({
+      // Build inner MIME using SDK email helpers
+      const mimeData = buildMime({
         from: details.from,
         to: [...details.to],
         cc: [...details.cc],
         subject: originalSubject,
-        body: details.body,
-        plainTextBody: details.plainTextBody,
-        isPlainText: details.isPlainText,
+        htmlBody: details.isPlainText ? undefined : details.body,
+        plainTextBody: details.isPlainText ? details.plainTextBody : undefined,
         date,
         inReplyTo,
         references,
         attachments: attachmentData,
       });
 
-      // Build per-recipient policy
+      // Serialize recipients for the popup
       const customPolicies = state.policy;
-      const recipients = [...details.to, ...details.cc];
-      const sealPolicy: Record<string, { ts: number; con: Array<{ t: string; v: string }> }> = {};
-
-      for (const recipient of recipients) {
-        const id = toEmail(recipient);
+      const allRecipients = [...details.to, ...details.cc];
+      const serializedRecipients: SerializedRecipient[] = allRecipients.map((r: string) => {
+        const id = toEmail(r);
         if (customPolicies && customPolicies[id]) {
-          sealPolicy[id] = {
-            ts: timestamp,
-            con: customPolicies[id].map(({ t, v }) =>
+          return {
+            type: "email" as const,
+            email: id,
+            policy: customPolicies[id].map(({ t, v }) =>
               t === EMAIL_ATTRIBUTE_TYPE ? { t, v: v.toLowerCase() } : { t, v }
             ),
           };
-        } else {
-          sealPolicy[id] = {
-            ts: timestamp,
-            con: [{ t: EMAIL_ATTRIBUTE_TYPE, v: id }],
-          };
         }
-      }
-
-      // Get signing identity
-      const from = toEmail(details.from);
-      const pubSignId = [{ t: EMAIL_ATTRIBUTE_TYPE, v: from }];
-      const privSignId = state.signId?.[from]?.filter(
-        ({ t }) => t !== EMAIL_ATTRIBUTE_TYPE
-      );
-      const totalId = [...pubSignId, ...(privSignId ?? [])];
-
-      // Get JWT for signing (from Yivi popup)
-      // const jwt = await checkLocalJwt(totalId).catch(() =>
-      //   createYiviPopup(totalId, "Signing")
-      // );
-      const jwt = await createYiviPopup(totalId, "Signing");
-      const { pubSignKey, privSignKey } = await getSigningKeys(jwt, {
-        pubSignId,
-        privSignId,
+        return { type: "email" as const, email: id };
       });
 
-      // Seal the message
-      const sealOptions: Parameters<typeof sealData>[1] = {
-        policy: sealPolicy,
-        pubSignKey,
-      };
-      if (privSignKey) sealOptions.privSignKey = privSignKey;
-      const encrypted = await sealData(pk, sealOptions, mimeData);
+      const from = toEmail(details.from);
 
-      // Remove original attachments
+      // Remove original attachments before popup (so they don't send unencrypted)
       for (const att of composeAttachments) {
         await browser.compose.removeAttachment(tab.id, att.id);
       }
 
-      // Add encrypted attachment
-      const encryptedFile = new File([encrypted as BlobPart], "postguard.encrypted", {
-        type: "application/postguard; charset=utf-8",
-      });
-      await browser.compose.addAttachment(tab.id, { file: encryptedFile });
+      // Delegate encryption to popup — popup creates its own pg instance,
+      // renders Yivi QR, encrypts, and returns the envelope
+      const result = await openCryptoPopup({
+        operation: "encrypt",
+        config: {
+          pkgUrl: PKG_URL!,
+          cryptifyUrl: CRYPTIFY_URL,
+          headers: PG_CLIENT_HEADER,
+        },
+        mimeDataBase64: toBase64(mimeData),
+        recipients: serializedRecipients,
+        senderEmail: from,
+        from: details.from,
+        websiteUrl: POSTGUARD_WEBSITE_URL,
+      }) as EncryptPopupResult;
 
-      // Store JWT for later use
-      // await storeLocalJwt(totalId, jwt);
+      // Only attach the encrypted file if it's under 5 MB
+      const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
+      if (result.attachmentSize <= MAX_ATTACHMENT_SIZE) {
+        const attBytes = fromBase64(result.attachmentBase64);
+        const attFile = new File([attBytes as BlobPart], "postguard.encrypted", {
+          type: "application/postguard; charset=utf-8",
+        });
+        await browser.compose.addAttachment(tab.id, { file: attFile });
+      }
 
       // Store MIME data for sent copy
       state.sentMimeData = mimeData;
 
-      // Build body with armor block + fallback URL
-      const base64Encrypted = btoa(
-        Array.from(new Uint8Array(encrypted as ArrayBuffer), (b) =>
-          String.fromCharCode(b)
-        ).join("")
-      );
-
       // Replace body and subject
       resolve({
         details: {
-          subject: POSTGUARD_SUBJECT,
-          body: getPlaceholderHtml(details.from, base64Encrypted),
-          plainTextBody: getPlaceholderText(details.from),
+          subject: result.subject,
+          body: result.htmlBody,
+          plainTextBody: result.plainTextBody,
         },
       });
     } catch (e) {
@@ -497,13 +465,11 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
 }
 
 async function handleQueryMessageState(tabId: number | undefined) {
-  console.log("[PostGuard] queryMessageState called, tabId:", tabId);
   if (tabId == null) return null;
 
   try {
     const msgList = await browser.messageDisplay.getDisplayedMessages(tabId);
     const msg = msgList?.messages?.[0];
-    console.log("[PostGuard] Displayed message:", msg?.id, msg?.subject);
     if (!msg) return null;
 
     const messageId = msg.id;
@@ -512,7 +478,6 @@ async function handleQueryMessageState(tabId: number | undefined) {
       ? false
       : await wasPGEncrypted(messageId);
     const badges = decryptedMessages.get(messageId)?.badges;
-    console.log("[PostGuard] State result:", { messageId, isEncrypted, wasEncrypted });
     return { messageId, isEncrypted, wasEncrypted, badges };
   } catch (e) {
     console.error("[PostGuard] queryMessageState error:", e);
@@ -532,7 +497,6 @@ async function handleToggleEncryption(tabId: number | undefined) {
   composeTabs.set(tabId, state);
   await updateComposeActionIcon(tabId);
 
-  // Set delivery format to "both" when encryption is on
   const details = await browser.compose.getComposeDetails(tabId);
   await browser.compose.setComposeDetails(tabId, {
     deliveryFormat: state.encrypt ? "both" : "auto",
@@ -558,7 +522,6 @@ async function handleOpenPolicyEditor(
 ) {
   if (windowId == null) return;
 
-  // Find the compose tab in this window
   const tabs = await browser.tabs.query({
     windowId,
     type: "messageCompose",
@@ -569,11 +532,9 @@ async function handleOpenPolicyEditor(
   const state = composeTabs.get(tabId);
   if (!state) return;
 
-  // Check if already open
   if (!sign && state.configWindowId) return;
   if (sign && state.signWindowId) return;
 
-  // Build initial policy from current recipients
   const details = await browser.compose.getComposeDetails(tabId);
   const recipients = sign ? [details.from] : [...(details.to ?? []), ...(details.cc ?? [])];
 
@@ -583,7 +544,6 @@ async function handleOpenPolicyEditor(
     initialPolicy[email] = [];
   }
 
-  // Merge existing policy
   const existingPolicy = sign ? state.signId : state.policy;
   if (existingPolicy) {
     for (const [rec, con] of Object.entries(existingPolicy)) {
@@ -593,7 +553,6 @@ async function handleOpenPolicyEditor(
     }
   }
 
-  // Open policy editor popup
   const popup = await browser.windows.create({
     url: "pages/policy-editor/policy-editor.html",
     type: "popup",
@@ -608,7 +567,6 @@ async function handleOpenPolicyEditor(
     state.configWindowId = popupId;
   }
 
-  // Store pending editor data
   const policyPromise = new Promise<Policy>((resolve, reject) => {
     pendingPolicyEditors.set(popupId, {
       composeTabId: tabId,
@@ -619,7 +577,6 @@ async function handleOpenPolicyEditor(
     });
   });
 
-  // Listen for window close
   const closeListener = (closedWindowId: number) => {
     if (closedWindowId === popupId) {
       const pending = pendingPolicyEditors.get(popupId);
@@ -671,88 +628,6 @@ async function handlePolicyEditorDone(
 
   pending.resolve(policy);
   pendingPolicyEditors.delete(windowId);
-  await browser.windows.get(windowId).then(() =>
-    // Close the popup after saving
-    // Use a small delay to let the message response complete
-    setTimeout(() => {
-      try {
-        // Window might already be closed
-      } catch {}
-    }, 100)
-  ).catch(() => {});
-}
-
-// --- Yivi popup flow ---
-
-export async function createYiviPopup(
-  con: AttributeCon,
-  sort: KeySort,
-  hints?: AttributeCon,
-  senderId?: string
-): Promise<string> {
-  const popup = await browser.windows.create({
-    url: "pages/yivi-popup/yivi-popup.html",
-    type: "popup",
-    height: 700,
-    width: 620,
-  });
-
-  const popupId = popup.id;
-  await browser.windows.update(popupId, {
-    drawAttention: true,
-    focused: true,
-  });
-
-  const data: PopupData = {
-    hostname: PKG_URL,
-    header: PG_CLIENT_HEADER,
-    con,
-    sort,
-    hints,
-    senderId,
-  };
-
-  const jwtPromise = new Promise<string>((resolve, reject) => {
-    pendingYiviPopups.set(popupId, { data, resolve, reject });
-  });
-
-  const closeListener = (closedId: number) => {
-    if (closedId === popupId) {
-      const pending = pendingYiviPopups.get(popupId);
-      if (pending) {
-        pending.reject(new Error("Yivi popup closed"));
-        pendingYiviPopups.delete(popupId);
-      }
-      browser.windows.onRemoved.removeListener(closeListener);
-    }
-  };
-  browser.windows.onRemoved.addListener(closeListener);
-
-  return keepAlive(
-    "yivi-session",
-    jwtPromise.finally(() => {
-      browser.windows.onRemoved.removeListener(closeListener);
-    })
-  ) as Promise<string>;
-}
-
-async function handleYiviPopupInit(windowId: number | undefined) {
-  if (windowId == null) return null;
-  const pending = pendingYiviPopups.get(windowId);
-  if (!pending) return null;
-  return pending.data;
-}
-
-async function handleYiviPopupDone(
-  windowId: number | undefined,
-  jwt: string
-) {
-  if (windowId == null) return;
-  const pending = pendingYiviPopups.get(windowId);
-  if (!pending) return;
-
-  pending.resolve(jwt);
-  pendingYiviPopups.delete(windowId);
 }
 
 // --- Decrypt message ---
@@ -760,148 +635,66 @@ async function handleYiviPopupDone(
 async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; error?: string }> {
   console.log("[PostGuard] Decrypt requested for message:", messageId);
 
-  if (!vk || !pgWasm) {
-    console.error("[PostGuard] pg-wasm or verification key not loaded");
-    notifyError("startupError");
-    return { ok: false, error: "startupError" };
-  }
-
   try {
     const msg = await browser.messages.get(messageId);
+
+    // Extract ciphertext using SDK email helpers
     const attachments = await browser.messages.listAttachments(messageId);
-    const pgAtt = attachments.find((att) => att.name === "postguard.encrypted");
-
-    let createReadable: () => Promise<ReadableStream<Uint8Array>>;
-
-    if (pgAtt) {
-      // Primary: decrypt from attachment
-      createReadable = async () => {
-        const attFile = await browser.messages.getAttachmentFile(
-          messageId,
-          pgAtt.partName
-        );
-        return (attFile as any).stream();
-      };
-    } else {
-      // Fallback: extract armored payload from body
-      const full = await browser.messages.getFull(messageId);
-      const bodyHtml = findHtmlBody(full);
-      if (!bodyHtml) return;
-
-      const armoredBase64 = extractArmoredPayload(bodyHtml);
-      if (!armoredBase64) return;
-
-      console.log("[PostGuard] Found armored payload in body, length:", armoredBase64.length);
-      const binaryString = atob(armoredBase64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      createReadable = async () =>
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(bytes);
-            controller.close();
-          },
-        });
-    }
-
-    // Create unsealer and inspect header
-    const readable = await createReadable();
-    const unsealer = await pgWasm.StreamUnsealer.new(readable, vk);
-    const recipients = unsealer.inspect_header();
-
-    // Find our identity among the header's recipients.
-    // Check message to/cc addresses against the header's recipient list.
-    const recipientKeys = recipients instanceof Map
-      ? [...recipients.keys()]
-      : Object.keys(recipients);
-    const myAddresses = [...msg.recipients, ...msg.ccList].map(toEmail);
-    const recipientId = myAddresses.find((addr) => recipientKeys.includes(addr));
-
-    if (!recipientId) {
-      console.error("[PostGuard] No matching recipient found. Header:", recipientKeys, "My addresses:", myAddresses);
-      return;
-    }
-
-    const me = recipients instanceof Map
-      ? recipients.get(recipientId)
-      : recipients[recipientId];
-    console.log("[PostGuard] Matched recipient:", recipientId);
-
-    // Prepare hints (what attributes are needed)
-    const hints = me.con.map(({ t, v }: { t: string; v: string }) =>
-      t === EMAIL_ATTRIBUTE_TYPE ? { t, v: recipientId } : { t, v }
-    );
-
-    // Prepare key request (for hidden policy)
-    const keyRequest = {
-      ...me,
-      con: me.con.map(({ t, v }: { t: string; v: string }) => {
-        if (t === EMAIL_ATTRIBUTE_TYPE) return { t, v: recipientId };
-        if (v === "" || v.includes("*")) return { t };
-        return { t, v };
-      }),
-    };
-
-    console.log("[PostGuard] Decrypting with policy:", keyRequest);
-
-    // Get JWT from Yivi popup
-    // const jwt = await checkLocalJwt(hints).catch(() =>
-    //   createYiviPopup(
-    //     keyRequest.con,
-    //     "Decryption",
-    //     hints,
-    //     toEmail(msg.author)
-    //   )
-    // );
-    const jwt = await createYiviPopup(
-      keyRequest.con,
-      "Decryption",
-      hints,
-      toEmail(msg.author)
-    );
-
-    // Get USK from PKG
-    const usk = await getUSK(jwt, keyRequest.ts);
-
-    // Unseal the message
-    // Need to re-create unsealer since the stream was consumed for header inspection
-    const readable2 = await createReadable();
-    const unsealer2 = await pgWasm.StreamUnsealer.new(readable2, vk);
-
-    let plaintext = "";
-    const decoder = new TextDecoder();
-    const writable = new WritableStream({
-      write(chunk: Uint8Array) {
-        plaintext += decoder.decode(chunk, { stream: true });
-      },
-      close() {
-        plaintext += decoder.decode();
-      },
-    });
-
-    const tStart = performance.now();
-    const senderIdentity = await unsealer2.unseal(recipientId, usk, writable);
-    console.log(
-      `[PostGuard] Decryption took ${(performance.now() - tStart).toFixed(0)}ms`
-    );
-    console.log("[PostGuard] Sender verification:", senderIdentity);
-
-    // Store JWT on success
-    // await storeLocalJwt(hints, jwt);
-
-    // Build badges from sender identity
-    const privBadges = senderIdentity?.private?.con ?? [];
-    const badges = [...senderIdentity.public.con, ...privBadges].map(
-      ({ t, v }: { t: string; v: string }) => ({
-        type: typeToImage(t),
-        value: v,
+    const attData = await Promise.all(
+      attachments.map(async (att) => {
+        const file = await browser.messages.getAttachmentFile(messageId, att.partName);
+        return {
+          name: att.name,
+          data: await file.arrayBuffer(),
+        };
       })
     );
 
-    // Inject threading headers from the encrypted envelope so the
-    // decrypted message stays in the correct thread.
+    let htmlBody: string | null = null;
+    try {
+      const full = await browser.messages.getFull(messageId);
+      htmlBody = findHtmlBody(full);
+    } catch {
+      // ignore
+    }
+
+    const ciphertext = extractCiphertext({
+      htmlBody: htmlBody ?? undefined,
+      attachments: attData,
+    });
+
+    if (!ciphertext) {
+      console.error("[PostGuard] No ciphertext found in message");
+      return { ok: false, error: "decryptionError" };
+    }
+
+    // Find our email among recipients
+    const myAddresses = [...msg.recipients, ...msg.ccList].map(toEmail);
+
+    // Delegate decryption to popup — popup creates its own pg instance,
+    // renders Yivi QR, decrypts, and returns the plaintext + sender
+    const result = await openCryptoPopup({
+      operation: "decrypt",
+      config: {
+        pkgUrl: PKG_URL!,
+        cryptifyUrl: CRYPTIFY_URL,
+        headers: PG_CLIENT_HEADER,
+      },
+      ciphertextBase64: toBase64(ciphertext),
+      recipientEmail: myAddresses[0],
+    }) as DecryptPopupResult;
+
+    const plaintext = new TextDecoder().decode(fromBase64(result.plaintextBase64));
+
+    // Build badges from sender identity (FriendlySender format)
+    const sender = result.sender;
+    const badges = (sender?.attributes ?? []).map(
+      ({ value: v }) => ({
+        value: v ?? "",
+      })
+    );
+
+    // Inject threading headers from the encrypted envelope
     const envelopeFull = await browser.messages.getFull(messageId);
     const threadingHeaders: Record<string, string> = {};
     const threadingRemove: string[] = [];
@@ -919,15 +712,14 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
       markedPlaintext = injectMimeHeaders(markedPlaintext, threadingHeaders, threadingRemove);
     }
 
-    // Inject X-PostGuard header so wasPGEncrypted() recognizes decrypted messages
+    // Inject X-PostGuard header
     markedPlaintext = injectMimeHeaders(markedPlaintext, { "X-PostGuard": "decrypted" });
 
-    // Import decrypted message directly into the original folder
+    // Import decrypted message into the original folder
     const file = new File([markedPlaintext], "decrypted.eml", {
       type: "text/plain",
     });
-    console.log("[PostGuard] Importing to folder:", msg.folder.id);
-    const importedMsg = await (browser.messages as any).import(file, msg.folder.id);
+    const importedMsg = await browser.messages.import(file, msg.folder.id);
     const importedMsgId = importedMsg.id;
     console.log("[PostGuard] Imported decrypted message:", importedMsgId);
 
@@ -935,7 +727,7 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
     decryptedMessages.set(importedMsgId, { badges });
 
     // Delete the encrypted original
-    await (browser.messages as any).delete([messageId], true);
+    await browser.messages.delete([messageId], true);
 
     // Select the decrypted message in the current mail tab
     try {

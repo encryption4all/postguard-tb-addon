@@ -18,8 +18,8 @@ export async function getOrCreateLocalFolder(
 
   // Search subfolders for existing folder
   try {
-    const subFolders = await browser.folders.getSubFolders(rootFolderId as any);
-    const existing = subFolders.find((f) => f.name === folderName);
+    const subFolders = await browser.folders.getSubFolders(rootFolderId);
+    const existing = subFolders.find((f: browser.MailFolder) => f.name === folderName);
     if (existing) return existing;
   } catch (e) {
     console.warn("[PostGuard] Could not list subfolders:", e);
@@ -27,7 +27,7 @@ export async function getOrCreateLocalFolder(
 
   // Create the folder
   try {
-    return await browser.folders.create(rootFolderId as any, folderName);
+    return await browser.folders.create(rootFolderId, folderName);
   } catch (e) {
     console.error("[PostGuard] Could not create folder:", e);
     return undefined;

@@ -33,6 +33,8 @@ declare namespace browser {
     function create(createData: Record<string, unknown>): Promise<{ id: number }>;
     function update(windowId: number, updateInfo: Record<string, unknown>): Promise<void>;
     function get(windowId: number): Promise<Record<string, unknown>>;
+    function getCurrent(): Promise<{ id: number }>;
+    function remove(windowId: number): Promise<void>;
     const onRemoved: {
       addListener(callback: (windowId: number) => void): void;
       removeListener(callback: (windowId: number) => void): void;
@@ -89,20 +91,29 @@ declare namespace browser {
     };
   }
 
-  namespace messages {
-    function get(messageId: number): Promise<MessageHeader>;
-    function getFull(messageId: number): Promise<{ headers: Record<string, string[]>; parts?: MessagePart[] }>;
-    function listAttachments(messageId: number): Promise<MessageAttachment[]>;
-    function getAttachmentFile(messageId: number, partName: string): Promise<File>;
-    function update(messageId: number, newProperties: Record<string, unknown>): Promise<void>;
-    function move(messageIds: number[], destination: MailFolder): Promise<void>;
-    function query(queryInfo: Record<string, unknown>): Promise<{ messages: MessageHeader[] }>;
-    function list(folder: MailFolder): Promise<{ messages: MessageHeader[] }>;
-    function archive(messageIds: number[]): Promise<void>;
-    // browser.messages.import is a reserved word, accessed as messages["import"]
-    function import_(file: File, destination: MailFolder): Promise<MessageHeader>;
-    function delete_(messageIds: number[], skipTrash?: boolean): Promise<void>;
+  // messages.import() and messages.delete() are JS reserved words, so they
+  // can't be declared as regular functions. Use bracket access at runtime:
+  //   (browser.messages as Messages).import(file, dest)
+  //   (browser.messages as Messages).delete(ids, skipTrash)
+  interface Messages {
+    get(messageId: number): Promise<MessageHeader>;
+    getFull(messageId: number): Promise<{ headers: Record<string, string[]>; parts?: MessagePart[] }>;
+    listAttachments(messageId: number): Promise<MessageAttachment[]>;
+    getAttachmentFile(messageId: number, partName: string): Promise<File>;
+    update(messageId: number, newProperties: Record<string, unknown>): Promise<void>;
+    move(messageIds: number[], destination: MailFolder | string): Promise<void>;
+    query(queryInfo: Record<string, unknown>): Promise<{ messages: MessageHeader[] }>;
+    list(folder: MailFolder): Promise<{ messages: MessageHeader[] }>;
+    archive(messageIds: number[]): Promise<void>;
+    import(file: File, destination: MailFolder | string): Promise<MessageHeader>;
+    delete(messageIds: number[], skipTrash?: boolean): Promise<void>;
+    onDeleted: {
+      addListener(callback: (deletedMessages: { messages: MessageHeader[] }) => void): void;
+      removeListener(callback: (deletedMessages: { messages: MessageHeader[] }) => void): void;
+    };
   }
+
+  const messages: Messages;
 
   // messages.import() and messages.delete() — these are the actual API names
   // TypeScript uses _import and _delete due to reserved words
@@ -112,6 +123,7 @@ declare namespace browser {
     date: Date;
     author: string;
     recipients: string[];
+    ccList: string[];
     subject: string;
     folder: MailFolder;
     read: boolean;
@@ -133,6 +145,7 @@ declare namespace browser {
   }
 
   interface MailFolder {
+    id: string;
     accountId: string;
     path: string;
     name?: string;
@@ -170,6 +183,7 @@ declare namespace browser {
     id: string;
     name: string;
     type: string;
+    rootFolder?: MailFolder;
     folders: MailFolder[];
     identities: Identity[];
   }
@@ -185,7 +199,8 @@ declare namespace browser {
   }
 
   namespace folders {
-    function create(parent: MailAccount | MailFolder, name: string): Promise<MailFolder>;
+    function create(parent: MailAccount | MailFolder | string, name: string): Promise<MailFolder>;
+    function getSubFolders(folderOrId: MailFolder | string): Promise<MailFolder[]>;
   }
 
   namespace storage {
@@ -210,7 +225,8 @@ declare namespace browser {
   }
 
   namespace mailTabs {
-    function setSelectedMessages(messageIds: number[]): Promise<void>;
+    function query(queryInfo: Record<string, unknown>): Promise<Array<{ id: number }>>;
+    function setSelectedMessages(tabId: number, messageIds: number[]): Promise<void>;
   }
 
   namespace notifications {
@@ -231,6 +247,7 @@ declare namespace process {
   const env: {
     NODE_ENV: string;
     PKG_URL: string;
+    CRYPTIFY_URL: string;
     POSTGUARD_WEBSITE_URL: string;
   };
 }

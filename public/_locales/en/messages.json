@@ -115,5 +115,11 @@
   },
   "startupError": {
     "message": "PostGuard failed to initialize. Encryption and decryption will not work until the issue is resolved."
+  },
+  "sentCopyError": {
+    "message": "Failed to save the sent copy of your encrypted message."
+  },
+  "decryptingButton": {
+    "message": "Decrypting..."
   }
 }

@@ -32,6 +32,11 @@
     "alarms",
     "notifications"
   ],
+  "host_permissions": [
+    "https://postguard.eu/*",
+    "https://*.postguard.eu/*",
+    "https://*.yivi.app/*"
+  ],
   "icons": {
     "64": "icons/icon-64.svg",
     "32": "icons/icon-32.svg",

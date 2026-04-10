@@ -1,40 +1,25 @@
+import "dotenv/config";
 import * as esbuild from "esbuild";
-import { cpSync, mkdirSync, existsSync, readFileSync } from "fs";
+import { cpSync, mkdirSync, existsSync } from "fs";
 import path from "path";
 
 const isDev = process.argv.includes("--dev");
 const isWatch = process.argv.includes("--watch");
 const outdir = "dist";
 
-// Load .env file if present (KEY=VALUE per line, # comments)
-function loadEnv() {
-  const envPath = path.resolve(".env");
-  if (!existsSync(envPath)) return {};
-  const vars = {};
-  for (const line of readFileSync(envPath, "utf-8").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq < 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let val = trimmed.slice(eq + 1).trim();
-    // Strip surrounding quotes
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    vars[key] = val;
-  }
-  return vars;
+// Build-time environment variables (set via .env file, see .env.example).
+const requiredEnvKeys = ["PKG_URL", "CRYPTIFY_URL", "POSTGUARD_WEBSITE_URL"];
+const missing = requiredEnvKeys.filter((key) => !process.env[key]);
+if (missing.length > 0) {
+  throw new Error(`Missing required environment variables: ${missing.join(", ")}. See .env.example`);
 }
 
-const env = loadEnv();
-
-// Build-time environment variables with defaults
 const envDefine = {
   "process.env.NODE_ENV": '"production"',
-  "process.env.PKG_URL": JSON.stringify(env.PKG_URL || "https://postguard.staging.yivi.app/pkg"),
-  "process.env.POSTGUARD_WEBSITE_URL": JSON.stringify(env.POSTGUARD_WEBSITE_URL || "https://postguard.staging.yivi.app"),
 };
+for (const key of requiredEnvKeys) {
+  envDefine[`process.env.${key}`] = JSON.stringify(process.env[key]);
+}
 
 // In release builds, strip console.log calls (marked pure so minification
 // removes them since the return value is never used) and minify output.
@@ -49,20 +34,14 @@ mkdirSync(outdir, { recursive: true });
 function copyStatic() {
   cpSync("manifest.json", path.join(outdir, "manifest.json"));
   cpSync("public", outdir, { recursive: true });
-
-  // Copy pg-wasm WASM binary and JS bindings for manual loading.
-  // public/pg-wasm/load.js (our custom loader) is already copied above.
-  const pgWasmSrc = "node_modules/@e4a/pg-wasm";
-  const pgWasmDest = path.join(outdir, "pg-wasm");
-  mkdirSync(pgWasmDest, { recursive: true });
-  for (const f of ["index_bg.js", "index_bg.wasm"]) {
-    if (existsSync(path.join(pgWasmSrc, f))) {
-      cpSync(path.join(pgWasmSrc, f), path.join(pgWasmDest, f));
-    }
-  }
 }
 
 copyStatic();
+
+// Packages that are unused in the extension context.
+const pgExternals = [
+  "@transcend-io/conflux",
+];
 
 // Background script
 const backgroundBuild = {
@@ -73,6 +52,8 @@ const backgroundBuild = {
   target: "firefox128",
   platform: "browser",
   define: envDefine,
+  external: pgExternals,
+
   ...releaseOptions,
 };
 
@@ -116,14 +97,17 @@ const policyEditorBuild = {
   ...releaseOptions,
 };
 
-// Yivi popup
+// Yivi popup (ESM format for dynamic WASM import via PostGuard SDK)
 const yiviPopupBuild = {
   entryPoints: ["src/pages/yivi-popup/yivi-popup.ts"],
   bundle: true,
   outfile: path.join(outdir, "pages/yivi-popup/yivi-popup.js"),
-  format: "iife",
+  format: "esm",
   target: "firefox128",
   platform: "browser",
+  define: envDefine,
+  external: pgExternals,
+
   ...releaseOptions,
 };
 

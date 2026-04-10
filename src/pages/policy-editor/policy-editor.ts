@@ -1,12 +1,12 @@
 /// <reference path="../../types/thunderbird.d.ts" />
 export {};
 
+import { EMAIL_ATTRIBUTE_TYPE as EMAIL_ATTR_TYPE } from "../../lib/utils";
+
 interface InitData {
   initialPolicy: Record<string, Array<{ t: string; v: string }>>;
   sign: boolean;
 }
-
-const EMAIL_ATTR_TYPE = "pbdf.sidn-pbdf.email.email";
 
 const ATTRIBUTE_TYPES = [
   { type: EMAIL_ATTR_TYPE, label: "Email address", hasValue: true },
@@ -126,7 +126,10 @@ function collectPolicy(): Record<string, Array<{ t: string; v: string }>> {
       const valueInput = section.querySelector<HTMLInputElement>(
         `input[type="text"][data-attr-type="${type}"]`
       );
-      attrs.push({ t: type, v: valueInput?.value ?? "" });
+      const value = valueInput?.value?.trim() ?? "";
+      // Skip non-email attributes with empty values
+      if (!value && type !== EMAIL_ATTR_TYPE) continue;
+      attrs.push({ t: type, v: value });
     }
 
     policy[email] = attrs;
