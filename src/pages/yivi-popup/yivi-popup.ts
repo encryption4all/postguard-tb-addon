@@ -14,7 +14,6 @@ import type {
 
 const titleEl = document.getElementById("title") as HTMLElement;
 const subtitleEl = document.getElementById("subtitle") as HTMLElement;
-const senderEl = document.getElementById("sender-info") as HTMLElement;
 const errorEl = document.getElementById("error") as HTMLElement;
 const loadingEl = document.getElementById("loading") as HTMLElement;
 
@@ -57,7 +56,7 @@ async function init() {
     titleEl.textContent = browser.i18n.getMessage("displayMessageTitle");
     subtitleEl.textContent = browser.i18n.getMessage("displayMessageHeading");
   } else {
-    titleEl.textContent = "PostGuard — Sign";
+    titleEl.textContent = browser.i18n.getMessage("displayMessageTitleSign");
     subtitleEl.textContent = browser.i18n.getMessage("displayMessageQrPrefix");
   }
 
