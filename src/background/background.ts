@@ -1,7 +1,7 @@
 /// <reference path="../types/thunderbird.d.ts" />
 
 import { buildMime, extractCiphertext, injectMimeHeaders } from "@e4a/pg-js";
-import { composeTabs, decryptedMessages } from "./state";
+import { composeTabs, decryptedMessages, persistEncryptState, restoreEncryptState } from "./state";
 import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
 import { toBase64, fromBase64 } from "../lib/encoding";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE, findHtmlBody } from "../lib/utils";
@@ -149,6 +149,7 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
     notifyError("sentCopyError");
   } finally {
     composeTabs.delete(tab.id);
+    persistEncryptState().catch(console.warn);
   }
 });
 
@@ -165,7 +166,11 @@ browser.windows.onCreated.addListener(async (window) => {
     if (tabs.length > 0 && tabs[0].id != null) {
       const tab = tabs[0];
       const encrypt = await shouldEncrypt(tab.id);
-      composeTabs.set(tab.id, { encrypt });
+      // Only set default state if the user hasn't already toggled encryption
+      // for this tab (race: user can toggle before this async handler finishes)
+      if (!composeTabs.has(tab.id)) {
+        composeTabs.set(tab.id, { encrypt });
+      }
       await updateComposeActionIcon(tab.id);
     }
   }
@@ -205,6 +210,16 @@ for (const tab of existingTabs) {
   if (tab.id != null) {
     const encrypt = await shouldEncrypt(tab.id);
     composeTabs.set(tab.id, { encrypt });
+    await updateComposeActionIcon(tab.id);
+  }
+}
+
+// Restore any persisted encryption state from a previous background session.
+// This runs AFTER the default initialization above so that persisted user
+// toggles override the shouldEncrypt defaults.
+await restoreEncryptState();
+for (const tab of existingTabs) {
+  if (tab.id != null) {
     await updateComposeActionIcon(tab.id);
   }
 }
@@ -496,6 +511,9 @@ async function handleToggleEncryption(tabId: number | undefined) {
   state.encrypt = !state.encrypt;
   composeTabs.set(tabId, state);
   await updateComposeActionIcon(tabId);
+
+  // Persist so the state survives background suspension
+  persistEncryptState().catch(console.warn);
 
   const details = await browser.compose.getComposeDetails(tabId);
   await browser.compose.setComposeDetails(tabId, {
