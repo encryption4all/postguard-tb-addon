@@ -1,6 +1,8 @@
-# PostGuard Thunderbird Add-on
+# postguard-tb-addon
 
-End-to-end email encryption extension for Thunderbird using identity-based encryption and [Yivi](https://yivi.app).
+> For full documentation, visit [docs.postguard.eu](https://docs.postguard.eu/repos/postguard-tb-addon).
+
+End-to-end email encryption extension for Thunderbird. Uses identity-based encryption and [Yivi](https://yivi.app) so users can send and receive encrypted email without managing keys or certificates. This is one of the main end-user products in the PostGuard system.
 
 ## Development
 
@@ -16,25 +18,25 @@ npm install
 cp .env.example .env   # adjust if needed
 ```
 
-### Build & Run
+### Build and run
 
 ```bash
-npm run build          # production build → dist/
+npm run build          # production build -> dist/
 npm run build:dev      # development build (no minification, keeps console.log)
 npm run watch          # dev build with file watching
 ```
 
-To load the extension in Thunderbird: open **Add-ons Manager → gear icon → Debug Add-ons → Load Temporary Add-on**, then select any file inside the `dist/` folder.
+To load the extension in Thunderbird: open Add-ons Manager, click the gear icon, select Debug Add-ons, then Load Temporary Add-on and pick any file inside the `dist/` folder.
 
-## Updating the Version
+## Releasing
 
-The version must be updated in three files:
+Update the version in three files:
 
-1. `package.json` — `"version"`
-2. `manifest.json` — `"version"`
-3. `updates.json` — add a new entry with the new version
+1. `package.json` (`"version"`)
+2. `manifest.json` (`"version"`)
+3. `updates.json` (add a new entry with the new version)
 
-Then commit, push, and tag:
+Then commit and tag:
 
 ```bash
 git add package.json manifest.json updates.json
@@ -43,4 +45,8 @@ git push origin main
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-Pushing the `v*` tag triggers the CI pipeline which builds the `.xpi` and creates a GitHub release.
+Pushing the `v*` tag triggers CI, which builds the `.xpi` file and creates a GitHub release.
+
+## License
+
+MIT
