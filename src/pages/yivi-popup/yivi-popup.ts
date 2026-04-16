@@ -109,6 +109,7 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
     sign: pg.sign.yivi({
       element: "#yivi-web-form",
       senderEmail: data.senderEmail,
+      attributes: data.senderAttributes,
     }),
     recipients,
     data: mimeData,
@@ -119,6 +120,7 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
     sealed,
     from: data.from,
     websiteUrl: data.websiteUrl,
+    senderAttributes: data.senderAttributes?.map((attr) => attr.v),
   });
 
   // Read the attachment File into base64

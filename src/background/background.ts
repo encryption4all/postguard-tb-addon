@@ -427,6 +427,12 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
 
       const from = toEmail(details.from);
 
+      // Collect sender signing attributes if configured
+      const signIdPolicy = state.signId;
+      const senderAttributes = signIdPolicy?.[from]?.filter(
+        (attr) => attr.t !== EMAIL_ATTRIBUTE_TYPE
+      );
+
       // Remove original attachments before popup (so they don't send unencrypted)
       for (const att of composeAttachments) {
         await browser.compose.removeAttachment(tab.id, att.id);
@@ -446,6 +452,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         senderEmail: from,
         from: details.from,
         websiteUrl: POSTGUARD_WEBSITE_URL,
+        senderAttributes,
       }) as EncryptPopupResult;
 
       // Only attach the encrypted file if it's under 5 MB
