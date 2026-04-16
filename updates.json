@@ -39,8 +39,8 @@
           }
         },
         {
-          "version": "0.9.1",
-          "update_link": "https://github.com/encryption4all/postguard-tb-addon/releases/download/v0.9.1/postguard-tb-addon-0.9.1.xpi",
+          "version": "0.9.2",
+          "update_link": "https://github.com/encryption4all/postguard-tb-addon/releases/download/v0.9.2/postguard-tb-addon-0.9.2.xpi",
           "applications": {
             "gecko": {
               "strict_min_version": "128.0"
