@@ -33,6 +33,7 @@ export interface EncryptPopupData {
   senderEmail: string;
   from: string;
   websiteUrl?: string;
+  senderAttributes?: { t: string; v: string }[];
 }
 
 export interface DecryptPopupData {
