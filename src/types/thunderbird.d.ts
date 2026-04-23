@@ -59,6 +59,11 @@ declare namespace browser {
     };
   }
 
+  interface ComposeCustomHeader {
+    name: string;
+    value: string;
+  }
+
   interface ComposeDetails {
     type: string;
     from: string;
@@ -71,6 +76,7 @@ declare namespace browser {
     isPlainText: boolean;
     deliveryFormat: string;
     relatedMessageId?: number;
+    customHeaders?: ComposeCustomHeader[];
   }
 
   interface ComposeAttachment {
