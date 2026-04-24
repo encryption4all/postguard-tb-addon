@@ -30,6 +30,12 @@ function notifyError(messageKey: string) {
 // always set by the time it is read.
 export let PG_CLIENT_HEADER: Record<string, string> = {};
 
+// Internet header flagged on outgoing encrypted messages. The Outlook add-in's
+// OnMessageRead launch event filters on `HeaderName="x-postguard"`; keeping
+// this value aligned with the Outlook compose flow and cryptify so a single
+// filter matches mail from all three senders. See postguard-tb-addon#52.
+const X_POSTGUARD_VERSION = "0.1.0";
+
 // --- Module-level state ---
 
 // Pending popup tracking maps
@@ -468,12 +474,15 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       // Store MIME data for sent copy
       state.sentMimeData = mimeData;
 
-      // Replace body and subject
+      // Replace body and subject, and tag the outgoing message with the
+      // x-postguard header so the Outlook add-in's OnMessageRead launch
+      // event fires on receipt.
       resolve({
         details: {
           subject: result.subject,
           body: result.htmlBody,
           plainTextBody: result.plainTextBody,
+          customHeaders: [{ name: "x-postguard", value: X_POSTGUARD_VERSION }],
         },
       });
     } catch (e) {
