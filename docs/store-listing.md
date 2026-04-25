@@ -72,7 +72,7 @@ PostGuard performs end-to-end encryption on your device. The plaintext
 of your messages never leaves your computer in readable form. To do
 its work it contacts three kinds of external services, nothing else.
 
-### 1. PostGuard PKG server (`postguard-main.cs.ru.nl` and `*.postguard.eu`)
+### 1. PostGuard PKG server (`pkg.postguard.eu`)
 
 The Private Key Generator (PKG) is the trusted authority that issues
 user secret keys for identity-based encryption.
