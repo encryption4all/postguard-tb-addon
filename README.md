@@ -47,6 +47,15 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 
 Pushing the `v*` tag triggers CI, which builds the `.xpi` file and creates a GitHub release.
 
+## Build reproducibility
+
+The add-on's WebAssembly module comes from the published `@e4a/pg-wasm`
+npm package (transitively, via `@e4a/pg-js`) and is inlined into the
+JavaScript bundle by esbuild at build time. See
+[`docs/build-reproducibility.md`](./docs/build-reproducibility.md) for
+the full supply chain, hash-verification steps, and reviewer notes for
+AMO submissions.
+
 ## License
 
 MIT
