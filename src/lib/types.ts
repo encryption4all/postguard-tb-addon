@@ -50,8 +50,12 @@ export interface EncryptPopupResult {
   subject: string;
   htmlBody: string;
   plainTextBody: string;
-  attachmentBase64: string;
+  /** null in tier 3 — pg-js decided the encrypted payload was too large
+   *  for a local attachment; the body's Cryptify link carries it. */
+  attachmentBase64: string | null;
   attachmentSize: number;
+  tier: "tier1" | "tier2" | "tier3";
+  uploadUuid: string | null;
 }
 
 export interface DecryptPopupResult {

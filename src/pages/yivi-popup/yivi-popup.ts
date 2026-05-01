@@ -123,8 +123,16 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
     senderAttributes: data.senderAttributes?.map((attr) => attr.v),
   });
 
-  // Read the attachment File into base64
-  const attBytes = new Uint8Array(await envelope.attachment.arrayBuffer());
+  // pg-js 1.1.0+: envelope.attachment is null in tier 3 (the encrypted
+  // payload was too large for a local attachment; the body has the
+  // Cryptify download link instead).
+  let attachmentBase64: string | null = null;
+  let attachmentSize = 0;
+  if (envelope.attachment) {
+    const attBytes = new Uint8Array(await envelope.attachment.arrayBuffer());
+    attachmentBase64 = toBase64(attBytes);
+    attachmentSize = attBytes.byteLength;
+  }
 
   await browser.runtime.sendMessage({
     type: "cryptoPopupDone",
@@ -134,8 +142,10 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
       subject: envelope.subject,
       htmlBody: envelope.htmlBody,
       plainTextBody: envelope.plainTextBody,
-      attachmentBase64: toBase64(attBytes),
-      attachmentSize: attBytes.byteLength,
+      attachmentBase64,
+      attachmentSize,
+      tier: envelope.tier,
+      uploadUuid: envelope.uploadUuid,
     },
   });
 }

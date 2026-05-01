@@ -461,9 +461,14 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         senderAttributes,
       }) as EncryptPopupResult;
 
-      // Only attach the encrypted file if it's under 5 MB
+      // pg-js 1.1.0+ may already decide to skip the attachment in tier 3.
+      // We additionally enforce a stricter 5 MB local cap for Thunderbird
+      // (some SMTP servers refuse messages larger than that).
       const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
-      if (result.attachmentSize <= MAX_ATTACHMENT_SIZE) {
+      if (
+        result.attachmentBase64 != null &&
+        result.attachmentSize <= MAX_ATTACHMENT_SIZE
+      ) {
         const attBytes = fromBase64(result.attachmentBase64);
         const attFile = new File([attBytes as BlobPart], "postguard.encrypted", {
           type: "application/postguard; charset=utf-8",
