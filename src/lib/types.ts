@@ -1,3 +1,10 @@
+import type {
+  EnvelopeTier,
+  FriendlySender,
+  PostGuardConfig,
+  RetryOptions,
+} from "@e4a/pg-js";
+
 export interface AttributeRequest {
   t: string;
   v: string;
@@ -13,10 +20,11 @@ export interface Badge {
 
 // --- Crypto popup messaging types ---
 
-export interface CryptoPopupConfig {
-  pkgUrl: string;
-  cryptifyUrl?: string;
+type SerializableRetryOptions = Omit<RetryOptions, "onRetry">;
+
+export interface CryptoPopupConfig extends Omit<PostGuardConfig, "headers" | "retry"> {
   headers?: Record<string, string>;
+  retry?: SerializableRetryOptions;
 }
 
 export interface SerializedRecipient {
@@ -61,14 +69,14 @@ export interface EncryptPopupResult {
    *  for a local attachment; the body's Cryptify link carries it. */
   attachmentBase64: string | null;
   attachmentSize: number;
-  tier: "tier1" | "tier2" | "tier3";
+  tier: EnvelopeTier;
   uploadUuid: string | null;
 }
 
 export interface DecryptPopupResult {
   operation: "decrypt";
   plaintextBase64: string;
-  sender: { email: string | null; attributes: { type: string; value?: string }[] } | null;
+  sender: FriendlySender | null;
 }
 
 export type CryptoPopupResult = EncryptPopupResult | DecryptPopupResult;
