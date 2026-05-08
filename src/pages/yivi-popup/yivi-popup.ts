@@ -2,13 +2,19 @@
 export {};
 
 import { PostGuard } from "@e4a/pg-js";
-import type { DecryptDataResult, DecryptFileResult } from "@e4a/pg-js";
+import type {
+  DecryptDataResult,
+  DecryptFileResult,
+  DecryptResult,
+  Recipient,
+} from "@e4a/pg-js";
 import { toBase64, fromBase64 } from "../../lib/encoding";
 import type {
   CryptoPopupInitData,
   EncryptPopupData,
   DecryptPopupData,
 } from "../../lib/types";
+import { EMAIL_ATTRIBUTE_TYPE } from "../../lib/utils";
 
 // console.log calls are stripped in release builds by esbuild's `pure` option
 
@@ -90,13 +96,13 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
   const mimeData = fromBase64(data.mimeDataBase64);
 
   // Rebuild typed recipients from serialized data
-  const recipients = data.recipients.map((r) => {
+  const recipients: Recipient[] = data.recipients.map((r) => {
     const base = r.type === "emailDomain"
       ? pg.recipient.emailDomain(r.email)
       : pg.recipient.email(r.email);
     if (r.policy) {
       for (const attr of r.policy) {
-        if (attr.t !== "pbdf.sidn-pbdf.email.email") {
+        if (attr.t !== EMAIL_ATTRIBUTE_TYPE) {
           base.extraAttribute(attr.t, attr.v);
         }
       }
@@ -159,10 +165,13 @@ async function handleDecrypt(pg: PostGuard, data: DecryptPopupData, windowId: nu
 
   if (data.uuid) {
     const opened = pg.open({ uuid: data.uuid });
-    const result = (await opened.decrypt({
+    const result = await opened.decrypt({
       element: "#yivi-web-form",
       recipient: data.recipientEmail,
-    })) as DecryptFileResult;
+    });
+    if (!isDecryptFileResult(result)) {
+      throw new Error("Expected file decrypt result for uploaded ciphertext");
+    }
     // pg-js's upload pipeline always wraps `data:`-mode payloads as a
     // single-file zip (`data.bin` = the raw MIME) before sealing, so the
     // uuid-mode decrypt yields a zip blob even though our caller used
@@ -174,10 +183,13 @@ async function handleDecrypt(pg: PostGuard, data: DecryptPopupData, windowId: nu
   } else if (data.ciphertextBase64) {
     const ciphertext = fromBase64(data.ciphertextBase64);
     const opened = pg.open({ data: ciphertext });
-    const result = (await opened.decrypt({
+    const result = await opened.decrypt({
       element: "#yivi-web-form",
       recipient: data.recipientEmail,
-    })) as DecryptDataResult;
+    });
+    if (!isDecryptDataResult(result)) {
+      throw new Error("Expected data decrypt result for attached ciphertext");
+    }
     plaintext = result.plaintext;
     sender = result.sender;
   } else {
@@ -193,6 +205,14 @@ async function handleDecrypt(pg: PostGuard, data: DecryptPopupData, windowId: nu
       sender,
     },
   });
+}
+
+function isDecryptFileResult(result: DecryptResult): result is DecryptFileResult {
+  return "blob" in result;
+}
+
+function isDecryptDataResult(result: DecryptResult): result is DecryptDataResult {
+  return "plaintext" in result;
 }
 
 /** Extract a single file from a ZIP blob and return its uncompressed
