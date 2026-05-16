@@ -22,6 +22,7 @@ import { toBase64, fromBase64 } from "../lib/encoding";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE, findHtmlBody } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
 import { isPGEncrypted, wasPGEncrypted } from "../lib/detection";
+import { handleAfterSend } from "./sent-copy";
 import type {
   Policy,
   SerializedRecipient,
@@ -133,37 +134,13 @@ browser.runtime.onMessage.addListener(
 
 browser.compose.onBeforeSend.addListener(handleBeforeSend);
 
-browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
-  const state = composeTabs.get(tab.id);
-  if (!state?.sentMimeData) return;
-
-  try {
-    for (const msg of sendInfo.messages) {
-      if (await isPGEncrypted(msg.id)) {
-        const localFolder = await getOrCreateLocalFolder("PostGuard Sent");
-        if (localFolder) {
-          const file = new File([state.sentMimeData as BlobPart], "sent.eml", {
-            type: "text/plain",
-          });
-          const localMsg = await browser.messages.import(
-            file,
-            localFolder.id
-          );
-          await browser.messages.move([localMsg.id], msg.folder.id);
-          await browser.messages.delete([msg.id], true);
-        }
-      }
-    }
-  } catch (e) {
-    console.error("[PostGuard] Failed to manage sent copy:", e);
-    notifyError("sentCopyError");
-  } finally {
-    cleanupComposeTab(tab.id);
-    clearInFlightUpload(tab.id);
-    persistEncryptState().catch(console.warn);
-    persistInFlightUploads().catch(console.warn);
-  }
-});
+browser.compose.onAfterSend.addListener((tab, sendInfo) =>
+  handleAfterSend(tab, sendInfo, {
+    notifyError,
+    isPGEncrypted,
+    getOrCreateLocalFolder,
+  }),
+);
 
 // Clean up decryptedMessages when messages are deleted
 browser.messages.onDeleted.addListener((deletedMessages) => {
