@@ -1,11 +1,22 @@
 /// <reference path="../types/thunderbird.d.ts" />
 
 import { buildMime, extractCiphertext, extractUploadUuid, injectMimeHeaders } from "@e4a/pg-js";
-import { composeTabs, decryptedMessages, persistEncryptState, restoreEncryptState } from "./state";
+import {
+  composeTabs,
+  decryptedMessages,
+  pendingCryptoPopups,
+  pendingPolicyEditors,
+  persistEncryptState,
+  restoreEncryptState,
+  toggleEncrypt,
+  cleanupComposeTab,
+  cleanupDecryptedMessage,
+} from "./state";
 import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
 import { toBase64, fromBase64 } from "../lib/encoding";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE, findHtmlBody } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
+import { isPGEncrypted, wasPGEncrypted } from "../lib/detection";
 import type {
   Policy,
   SerializedRecipient,
@@ -37,27 +48,9 @@ export let PG_CLIENT_HEADER: Record<string, string> = {};
 const X_POSTGUARD_VERSION = "0.1.0";
 
 // --- Module-level state ---
-
-// Pending popup tracking maps
-const pendingPolicyEditors = new Map<
-  number,
-  {
-    composeTabId: number;
-    initialPolicy: Policy;
-    sign: boolean;
-    resolve: (policy: Policy) => void;
-    reject: (err: Error) => void;
-  }
->();
-
-const pendingCryptoPopups = new Map<
-  number,
-  {
-    data: CryptoPopupInitData;
-    resolve: (result: CryptoPopupResult) => void;
-    reject: (err: Error) => void;
-  }
->();
+// pendingPolicyEditors and pendingCryptoPopups live in ./state so unit tests
+// can observe map churn (open / resolve / reject / close) without spinning
+// up the whole background script.
 
 // --- Register message display script ---
 browser.scripting.messageDisplay
@@ -154,7 +147,7 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
     console.error("[PostGuard] Failed to manage sent copy:", e);
     notifyError("sentCopyError");
   } finally {
-    composeTabs.delete(tab.id);
+    cleanupComposeTab(tab.id);
     persistEncryptState().catch(console.warn);
   }
 });
@@ -162,7 +155,7 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
 // Clean up decryptedMessages when messages are deleted
 browser.messages.onDeleted.addListener((deletedMessages) => {
   for (const msg of deletedMessages.messages) {
-    decryptedMessages.delete(msg.id);
+    cleanupDecryptedMessage(msg.id);
   }
 });
 
@@ -241,27 +234,6 @@ async function shouldEncrypt(tabId: number): Promise<boolean> {
   } catch (e) {
     console.warn("[PostGuard] shouldEncrypt error:", e);
   }
-  return false;
-}
-
-async function isPGEncrypted(msgId: number): Promise<boolean> {
-  // Tier 1/2 envelopes ship a postguard.encrypted attachment. Tier 3 has
-  // no attachment — the encrypted payload only lives in Cryptify, with
-  // a /decrypt?uuid=… link in the body. Both shapes are handled by the
-  // popup's decrypt path; we just need to detect "looks like a PostGuard
-  // message" here so the banner offers the Decrypt button instead of
-  // falling back to the wasEncrypted info banner.
-  const attachments = await browser.messages.listAttachments(msgId);
-  if (attachments.some((att) => att.name === "postguard.encrypted")) return true;
-
-  try {
-    const full = await browser.messages.getFull(msgId);
-    const bodyHtml = findHtmlBody(full);
-    if (bodyHtml && extractUploadUuid(bodyHtml)) return true;
-  } catch {
-    // ignore
-  }
-
   return false;
 }
 
@@ -527,28 +499,11 @@ async function handleQueryMessageState(tabId: number | undefined) {
   }
 }
 
-async function wasPGEncrypted(msgId: number): Promise<boolean> {
-  const full = await browser.messages.getFull(msgId);
-  return "x-postguard" in full.headers;
-}
-
 async function handleToggleEncryption(tabId: number | undefined) {
   if (tabId == null) return;
-  const state = composeTabs.get(tabId) ?? { encrypt: false };
-  state.encrypt = !state.encrypt;
-  composeTabs.set(tabId, state);
+  const result = await toggleEncrypt(tabId);
   await updateComposeActionIcon(tabId);
-
-  // Persist so the state survives background suspension
-  persistEncryptState().catch(console.warn);
-
-  const details = await browser.compose.getComposeDetails(tabId);
-  await browser.compose.setComposeDetails(tabId, {
-    deliveryFormat: state.encrypt ? "both" : "auto",
-  } as Partial<typeof details>);
-
-  const hasRecipients = [...(details.to ?? []), ...(details.cc ?? [])].length > 0;
-  return { encrypt: state.encrypt, hasRecipients };
+  return result;
 }
 
 async function handleGetComposeState(tabId: number | undefined) {
