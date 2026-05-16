@@ -1,6 +1,6 @@
 /// <reference path="../types/thunderbird.d.ts" />
 
-import { buildMime, extractCiphertext, extractUploadUuid, injectMimeHeaders } from "@e4a/pg-js";
+import { buildMime, extractCiphertext, extractUploadUuid, injectMimeHeaders, resumeUpload, UploadSessionExpiredError } from "@e4a/pg-js";
 import {
   composeTabs,
   decryptedMessages,
@@ -11,6 +11,11 @@ import {
   toggleEncrypt,
   cleanupComposeTab,
   cleanupDecryptedMessage,
+  inFlightUploads,
+  recordInFlightUpload,
+  clearInFlightUpload,
+  persistInFlightUploads,
+  loadInFlightUploads,
 } from "./state";
 import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
 import { toBase64, fromBase64 } from "../lib/encoding";
@@ -112,6 +117,12 @@ browser.runtime.onMessage.addListener(
           msg.windowId as number | undefined ?? sender.tab?.windowId,
           msg.error as string
         ));
+      case "cryptoPopupUploadInit":
+        return Promise.resolve(handleCryptoPopupUploadInit(
+          msg.windowId as number | undefined ?? sender.tab?.windowId,
+          msg.uuid as string,
+          msg.recoveryToken as string
+        ));
       case "decryptMessage":
         return handleDecryptMessage(msg.messageId as number);
       default:
@@ -148,7 +159,9 @@ browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
     notifyError("sentCopyError");
   } finally {
     cleanupComposeTab(tab.id);
+    clearInFlightUpload(tab.id);
     persistEncryptState().catch(console.warn);
+    persistInFlightUploads().catch(console.warn);
   }
 });
 
@@ -223,6 +236,43 @@ for (const tab of existingTabs) {
   }
 }
 
+// Probe any in-flight Cryptify uploads that survived a background
+// restart. pg-js doesn't yet expose a "continue createEnvelope from a
+// rehydrated FileState" entry point, so we cannot transparently finish
+// the previous upload — but we can detect a definitively-dead session
+// (`UploadSessionExpiredError`) and surface it to the user instead of
+// silently dropping the record on the next send attempt.
+checkInFlightUploadsOnStartup().catch((e) =>
+  console.warn("[PostGuard] in-flight upload probe failed:", e)
+);
+
+async function checkInFlightUploadsOnStartup() {
+  if (!CRYPTIFY_URL) return;
+  const records = await loadInFlightUploads();
+  if (records.length === 0) return;
+  let sawExpired = false;
+  for (const { tabId, record } of records) {
+    try {
+      await resumeUpload(CRYPTIFY_URL, record.uuid, record.recoveryToken);
+      // Session still alive on the server side. Keep the record so a
+      // future SDK release with a continue-from-FileState entry point
+      // can rehydrate it.
+      inFlightUploads.set(tabId, record);
+    } catch (e) {
+      if (e instanceof UploadSessionExpiredError) {
+        sawExpired = true;
+        // The session is gone; drop the record.
+      } else {
+        // Transient network error — keep the record for the next probe.
+        console.warn("[PostGuard] resumeUpload probe failed:", e);
+        inFlightUploads.set(tabId, record);
+      }
+    }
+  }
+  await persistInFlightUploads();
+  if (sawExpired) notifyError("uploadSessionExpired");
+}
+
 async function shouldEncrypt(tabId: number): Promise<boolean> {
   try {
     const details = await browser.compose.getComposeDetails(tabId);
@@ -256,7 +306,10 @@ function keepAlive(name: string, promise: Promise<unknown>) {
 
 // --- Crypto popup: opens popup that owns encrypt/decrypt ---
 
-async function openCryptoPopup(data: CryptoPopupInitData): Promise<CryptoPopupResult> {
+async function openCryptoPopup(
+  data: CryptoPopupInitData,
+  composeTabId?: number,
+): Promise<CryptoPopupResult> {
   const { promise, resolve, reject } = Promise.withResolvers<CryptoPopupResult>();
 
   const popup = await browser.windows.create({
@@ -269,7 +322,7 @@ async function openCryptoPopup(data: CryptoPopupInitData): Promise<CryptoPopupRe
   const popupId = popup.id;
 
   // Register IMMEDIATELY after create, before the popup script can send cryptoPopupInit
-  pendingCryptoPopups.set(popupId, { data, resolve, reject });
+  pendingCryptoPopups.set(popupId, { data, composeTabId, resolve, reject });
 
   const closeListener = (closedId: number) => {
     if (closedId === popupId) {
@@ -305,6 +358,10 @@ function handleCryptoPopupDone(
   if (windowId == null) return;
   const pending = pendingCryptoPopups.get(windowId);
   if (!pending) return;
+  if (pending.composeTabId != null) {
+    clearInFlightUpload(pending.composeTabId);
+    persistInFlightUploads().catch(console.warn);
+  }
   pending.resolve(result);
   pendingCryptoPopups.delete(windowId);
 }
@@ -316,8 +373,29 @@ function handleCryptoPopupError(
   if (windowId == null) return;
   const pending = pendingCryptoPopups.get(windowId);
   if (!pending) return;
+  if (pending.composeTabId != null) {
+    clearInFlightUpload(pending.composeTabId);
+    persistInFlightUploads().catch(console.warn);
+  }
   pending.reject(new Error(error));
   pendingCryptoPopups.delete(windowId);
+}
+
+/** Popup → background hop fired from pg-js's `onUploadInit` callback,
+ *  once the Cryptify session exists but before any chunk PUT. Records
+ *  `{uuid, recoveryToken}` against the popup's owning compose tab so
+ *  the session can be queried via `resumeUpload` after a background
+ *  suspension or Thunderbird restart. */
+function handleCryptoPopupUploadInit(
+  windowId: number | undefined,
+  uuid: string,
+  recoveryToken: string,
+) {
+  if (windowId == null || !uuid || !recoveryToken) return;
+  const pending = pendingCryptoPopups.get(windowId);
+  if (!pending || pending.composeTabId == null) return;
+  recordInFlightUpload(pending.composeTabId, uuid, recoveryToken);
+  persistInFlightUploads().catch(console.warn);
 }
 
 // --- onBeforeSend: encryption hook ---
@@ -423,7 +501,10 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       }
 
       // Delegate encryption to popup — popup creates its own pg instance,
-      // renders Yivi QR, encrypts, and returns the envelope
+      // renders Yivi QR, encrypts, and returns the envelope. The popup
+      // also forwards pg-js's `onUploadInit` callback as a
+      // `cryptoPopupUploadInit` message, which we associate back to this
+      // compose tab via the `composeTabId` thread.
       const result = await openCryptoPopup({
         operation: "encrypt",
         config: {
@@ -437,7 +518,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
         from: details.from,
         websiteUrl: POSTGUARD_WEBSITE_URL,
         senderAttributes,
-      }) as EncryptPopupResult;
+      }, tab.id) as EncryptPopupResult;
 
       // pg-js 1.1.0+ may already decide to skip the attachment in tier 3.
       // We additionally enforce a stricter 5 MB local cap for Thunderbird

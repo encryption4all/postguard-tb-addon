@@ -119,6 +119,9 @@
   "sentCopyError": {
     "message": "Het opslaan van de verzonden kopie van je versleutelde bericht is mislukt."
   },
+  "uploadSessionExpired": {
+    "message": "De versleutelde uploadsessie is verlopen voordat deze kon worden voltooid. Verstuur het bericht opnieuw."
+  },
   "decryptingButton": {
     "message": "Ontsleutelen..."
   }

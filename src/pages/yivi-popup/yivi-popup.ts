@@ -1,14 +1,20 @@
 /// <reference path="../../types/thunderbird.d.ts" />
 export {};
 
-import { PostGuard } from "@e4a/pg-js";
-import type { DecryptDataResult, DecryptFileResult } from "@e4a/pg-js";
+import { PostGuard, UploadSessionExpiredError } from "@e4a/pg-js";
+import type {
+  DecryptDataResult,
+  DecryptFileResult,
+  DecryptResult,
+  Recipient,
+} from "@e4a/pg-js";
 import { toBase64, fromBase64 } from "../../lib/encoding";
 import type {
   CryptoPopupInitData,
   EncryptPopupData,
   DecryptPopupData,
 } from "../../lib/types";
+import { EMAIL_ATTRIBUTE_TYPE } from "../../lib/utils";
 
 // console.log calls are stripped in release builds by esbuild's `pure` option
 
@@ -76,7 +82,13 @@ async function init() {
     setTimeout(() => browser.windows.remove(windowId), 750);
   } catch (e) {
     console.error("[PostGuard] Crypto popup error:", e);
-    const message = e instanceof Error ? e.message : "Operation failed.";
+    // pg-js surfaces a dead Cryptify session as `UploadSessionExpiredError`.
+    // The generic encryption-error wording is misleading here — the local
+    // encryption succeeded, the server side dropped the upload. Use the
+    // dedicated i18n string so the user knows to start a fresh send.
+    const message = e instanceof UploadSessionExpiredError
+      ? browser.i18n.getMessage("uploadSessionExpired")
+      : e instanceof Error ? e.message : "Operation failed.";
     await browser.runtime.sendMessage({
       type: "cryptoPopupError",
       windowId,
@@ -90,13 +102,13 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
   const mimeData = fromBase64(data.mimeDataBase64);
 
   // Rebuild typed recipients from serialized data
-  const recipients = data.recipients.map((r) => {
+  const recipients: Recipient[] = data.recipients.map((r) => {
     const base = r.type === "emailDomain"
       ? pg.recipient.emailDomain(r.email)
       : pg.recipient.email(r.email);
     if (r.policy) {
       for (const attr of r.policy) {
-        if (attr.t !== "pbdf.sidn-pbdf.email.email") {
+        if (attr.t !== EMAIL_ATTRIBUTE_TYPE) {
           base.extraAttribute(attr.t, attr.v);
         }
       }
@@ -115,12 +127,29 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
     data: mimeData,
   });
 
-  // Create encrypted email envelope
+  // Create encrypted email envelope. `onUploadInit` fires once, after
+  // Cryptify's `upload_init` resolves and before any chunk PUT, so the
+  // background can persist `{uuid, recoveryToken}` against this compose
+  // tab from the moment the session exists. The callback runs inside
+  // pg-js's upload-stream start handler — a throw would abort the
+  // upload — so we fire-and-forget the sendMessage.
   const envelope = await pg.email.createEnvelope({
     sealed,
     from: data.from,
     websiteUrl: data.websiteUrl,
     senderAttributes: data.senderAttributes?.map((attr) => attr.v),
+    onUploadInit: ({ uuid, recoveryToken }) => {
+      browser.runtime
+        .sendMessage({
+          type: "cryptoPopupUploadInit",
+          windowId,
+          uuid,
+          recoveryToken,
+        })
+        .catch((err: unknown) => {
+          console.warn("[PostGuard Popup] cryptoPopupUploadInit send failed:", err);
+        });
+    },
   });
 
   // pg-js 1.1.0+: envelope.attachment is null in tier 3 (the encrypted
@@ -159,10 +188,13 @@ async function handleDecrypt(pg: PostGuard, data: DecryptPopupData, windowId: nu
 
   if (data.uuid) {
     const opened = pg.open({ uuid: data.uuid });
-    const result = (await opened.decrypt({
+    const result = await opened.decrypt({
       element: "#yivi-web-form",
       recipient: data.recipientEmail,
-    })) as DecryptFileResult;
+    });
+    if (!isDecryptFileResult(result)) {
+      throw new Error("Expected file decrypt result for uploaded ciphertext");
+    }
     // pg-js's upload pipeline always wraps `data:`-mode payloads as a
     // single-file zip (`data.bin` = the raw MIME) before sealing, so the
     // uuid-mode decrypt yields a zip blob even though our caller used
@@ -174,10 +206,13 @@ async function handleDecrypt(pg: PostGuard, data: DecryptPopupData, windowId: nu
   } else if (data.ciphertextBase64) {
     const ciphertext = fromBase64(data.ciphertextBase64);
     const opened = pg.open({ data: ciphertext });
-    const result = (await opened.decrypt({
+    const result = await opened.decrypt({
       element: "#yivi-web-form",
       recipient: data.recipientEmail,
-    })) as DecryptDataResult;
+    });
+    if (!isDecryptDataResult(result)) {
+      throw new Error("Expected data decrypt result for attached ciphertext");
+    }
     plaintext = result.plaintext;
     sender = result.sender;
   } else {
@@ -193,6 +228,14 @@ async function handleDecrypt(pg: PostGuard, data: DecryptPopupData, windowId: nu
       sender,
     },
   });
+}
+
+function isDecryptFileResult(result: DecryptResult): result is DecryptFileResult {
+  return "blob" in result;
+}
+
+function isDecryptDataResult(result: DecryptResult): result is DecryptDataResult {
+  return "plaintext" in result;
 }
 
 /** Extract a single file from a ZIP blob and return its uncompressed

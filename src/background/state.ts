@@ -33,6 +33,10 @@ export interface PendingPolicyEditor {
 
 export interface PendingCryptoPopup {
   data: CryptoPopupInitData;
+  /** Compose tab that owns the popup, when the operation is `encrypt`.
+   *  Used to associate `cryptoPopupUploadInit` callbacks with the
+   *  right tab's in-flight-upload record. Absent on decrypt popups. */
+  composeTabId?: number;
   resolve: (result: CryptoPopupResult) => void;
   reject: (err: Error) => void;
 }
@@ -135,4 +139,71 @@ export function cleanupComposeTab(tabId: number): void {
 /** Drop the decrypted-message entry for a deleted message id. No-op if absent. */
 export function cleanupDecryptedMessage(msgId: number): void {
   decryptedMessages.delete(msgId);
+}
+
+// --- In-flight Cryptify upload tracking ---
+// Captured from pg-js's `onUploadInit` callback on the popup side and
+// persisted here so a background suspension / Thunderbird restart can
+// still query the upload session via `resumeUpload(uuid, recoveryToken)`.
+// Records are cleared on successful send (or popup error) and pruned on
+// startup against `MAX_IN_FLIGHT_AGE_MS`.
+
+export interface InFlightUpload {
+  uuid: string;
+  recoveryToken: string;
+  /** Millisecond timestamp captured at `onUploadInit`. Used to drop
+   *  records older than the Cryptify session TTL on restart. */
+  startedAt: number;
+}
+
+export const inFlightUploads = new Map<number, InFlightUpload>();
+
+const IN_FLIGHT_KEY = "inFlightUploads";
+
+/** Drop records older than this on restart instead of querying Cryptify.
+ *  Cryptify's default session TTL is hours; 24h is a generous upper
+ *  bound that avoids hammering the server with confirmed-dead sessions. */
+export const MAX_IN_FLIGHT_AGE_MS = 24 * 60 * 60 * 1000;
+
+export async function persistInFlightUploads(): Promise<void> {
+  if (inFlightUploads.size === 0) {
+    await browser.storage.local.remove(IN_FLIGHT_KEY);
+    return;
+  }
+  const out: Record<string, InFlightUpload> = {};
+  for (const [tabId, record] of inFlightUploads) {
+    out[String(tabId)] = record;
+  }
+  await browser.storage.local.set({ [IN_FLIGHT_KEY]: out });
+}
+
+/** Read persisted records and return the ones still within the
+ *  freshness window. Stale records are dropped without a network call.
+ *  Callers are expected to feed the returned list into `resumeUpload` to
+ *  classify each as alive / expired and react accordingly. */
+export async function loadInFlightUploads(): Promise<Array<{ tabId: number; record: InFlightUpload }>> {
+  try {
+    const data = await browser.storage.local.get(IN_FLIGHT_KEY);
+    const saved = data[IN_FLIGHT_KEY] as Record<string, InFlightUpload> | undefined;
+    if (!saved) return [];
+    const now = Date.now();
+    const fresh: Array<{ tabId: number; record: InFlightUpload }> = [];
+    for (const [tabIdStr, record] of Object.entries(saved)) {
+      if (now - record.startedAt <= MAX_IN_FLIGHT_AGE_MS) {
+        fresh.push({ tabId: Number(tabIdStr), record });
+      }
+    }
+    return fresh;
+  } catch (e) {
+    console.warn("[PostGuard] Failed to load in-flight uploads:", e);
+    return [];
+  }
+}
+
+export function recordInFlightUpload(tabId: number, uuid: string, recoveryToken: string): void {
+  inFlightUploads.set(tabId, { uuid, recoveryToken, startedAt: Date.now() });
+}
+
+export function clearInFlightUpload(tabId: number): void {
+  inFlightUploads.delete(tabId);
 }
