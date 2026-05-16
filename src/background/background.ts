@@ -22,6 +22,14 @@ import { toBase64, fromBase64 } from "../lib/encoding";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE, findHtmlBody } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
 import { isPGEncrypted, wasPGEncrypted } from "../lib/detection";
+import { dispatchRuntimeMessage } from "./runtime-router";
+import { handleAfterSend } from "./sent-copy";
+import {
+  serializeRecipients,
+  buildThreadingHeaders,
+  evaluateBeforeSendGuards,
+  MAX_ATTACHMENT_SIZE,
+} from "./encryption-flow";
 import {
   buildDecryptedThreadingHeaders,
   classifyDecryptionError,
@@ -77,100 +85,44 @@ browser.scripting.messageDisplay
 
 // --- Register ALL event listeners BEFORE heavy awaits ---
 
+async function resolveComposeTabIdFromWindow(
+  windowId: number | undefined,
+): Promise<number | undefined> {
+  if (!windowId) return undefined;
+  const tabs = await browser.tabs.query({
+    windowId,
+    type: "messageCompose",
+  });
+  return tabs[0]?.id;
+}
+
 browser.runtime.onMessage.addListener(
-  (message: unknown, sender: browser.MessageSender) => {
-    if (!message || typeof message !== "object") return false;
-    const msg = message as Record<string, unknown>;
-
-    const resolveComposeTabId = async (): Promise<number | undefined> => {
-      if (!sender.tab?.windowId) return undefined;
-      const tabs = await browser.tabs.query({
-        windowId: sender.tab.windowId,
-        type: "messageCompose",
-      });
-      return tabs[0]?.id;
-    };
-
-    switch (msg.type) {
-      case "queryMessageState":
-        return handleQueryMessageState(sender.tab?.id);
-      case "toggleEncryption":
-        return resolveComposeTabId().then((id) => handleToggleEncryption(id));
-      case "getComposeState":
-        return resolveComposeTabId().then((id) => handleGetComposeState(id));
-      case "openPolicyEditor":
-        return handleOpenPolicyEditor(sender.tab?.windowId, false);
-      case "openSignEditor":
-        return handleOpenPolicyEditor(sender.tab?.windowId, true);
-      case "policyEditorInit":
-        return Promise.resolve(handlePolicyEditorInit(sender.tab?.windowId));
-      case "policyEditorDone":
-        return handlePolicyEditorDone(
-          sender.tab?.windowId,
-          msg.policy as Policy
-        );
-      case "cryptoPopupInit": {
-        // Must return a Promise — synchronous returns are not forwarded as responses in TB/Firefox
-        const initWindowId = msg.windowId as number | undefined ?? sender.tab?.windowId;
-        return Promise.resolve(handleCryptoPopupInit(initWindowId));
-      }
-      case "cryptoPopupDone":
-        return Promise.resolve(handleCryptoPopupDone(
-          msg.windowId as number | undefined ?? sender.tab?.windowId,
-          msg.result as CryptoPopupResult
-        ));
-      case "cryptoPopupError":
-        return Promise.resolve(handleCryptoPopupError(
-          msg.windowId as number | undefined ?? sender.tab?.windowId,
-          msg.error as string
-        ));
-      case "cryptoPopupUploadInit":
-        return Promise.resolve(handleCryptoPopupUploadInit(
-          msg.windowId as number | undefined ?? sender.tab?.windowId,
-          msg.uuid as string,
-          msg.recoveryToken as string
-        ));
-      case "decryptMessage":
-        return handleDecryptMessage(msg.messageId as number);
-      default:
-        return false;
-    }
-  }
+  (message: unknown, sender: browser.MessageSender) =>
+    dispatchRuntimeMessage(message, sender, {
+      handleQueryMessageState,
+      handleToggleEncryption,
+      handleGetComposeState,
+      handleOpenPolicyEditor,
+      handlePolicyEditorInit,
+      handlePolicyEditorDone,
+      handleCryptoPopupInit,
+      handleCryptoPopupDone,
+      handleCryptoPopupError,
+      handleCryptoPopupUploadInit,
+      handleDecryptMessage,
+      resolveComposeTabId: resolveComposeTabIdFromWindow,
+    }),
 );
 
 browser.compose.onBeforeSend.addListener(handleBeforeSend);
 
-browser.compose.onAfterSend.addListener(async (tab, sendInfo) => {
-  const state = composeTabs.get(tab.id);
-  if (!state?.sentMimeData) return;
-
-  try {
-    for (const msg of sendInfo.messages) {
-      if (await isPGEncrypted(msg.id)) {
-        const localFolder = await getOrCreateLocalFolder("PostGuard Sent");
-        if (localFolder) {
-          const file = new File([state.sentMimeData as BlobPart], "sent.eml", {
-            type: "text/plain",
-          });
-          const localMsg = await browser.messages.import(
-            file,
-            localFolder.id
-          );
-          await browser.messages.move([localMsg.id], msg.folder.id);
-          await browser.messages.delete([msg.id], true);
-        }
-      }
-    }
-  } catch (e) {
-    console.error("[PostGuard] Failed to manage sent copy:", e);
-    notifyError("sentCopyError");
-  } finally {
-    cleanupComposeTab(tab.id);
-    clearInFlightUpload(tab.id);
-    persistEncryptState().catch(console.warn);
-    persistInFlightUploads().catch(console.warn);
-  }
-});
+browser.compose.onAfterSend.addListener((tab, sendInfo) =>
+  handleAfterSend(tab, sendInfo, {
+    notifyError,
+    isPGEncrypted,
+    getOrCreateLocalFolder,
+  }),
+);
 
 // Clean up decryptedMessages when messages are deleted
 browser.messages.onDeleted.addListener((deletedMessages) => {
@@ -409,18 +361,18 @@ function handleCryptoPopupUploadInit(
 
 async function handleBeforeSend(tab: { id: number }, details: any) {
   const state = composeTabs.get(tab.id);
-  if (!state?.encrypt) return;
-
-  if (details.bcc.length > 0) {
-    notifyError("composeBccWarning");
-    return { cancel: true };
-  }
-
-  if (state.configWindowId) {
-    await browser.windows.update(state.configWindowId, {
-      drawAttention: true,
-      focused: true,
-    });
+  const guard = evaluateBeforeSendGuards(state, details);
+  // After the guard returns null the state is guaranteed encrypt:true.
+  if (guard || !state) {
+    if (!guard || guard.kind === "skip") return;
+    if (guard.reason === "bcc") {
+      notifyError("composeBccWarning");
+    } else if (guard.reason === "policyEditorOpen" && state?.configWindowId) {
+      await browser.windows.update(state.configWindowId, {
+        drawAttention: true,
+        focused: true,
+      });
+    }
     return { cancel: true };
   }
 
@@ -452,12 +404,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       if (details.relatedMessageId) {
         try {
           const relFull = await browser.messages.getFull(details.relatedMessageId);
-          const relMsgId = relFull.headers["message-id"]?.[0];
-          if (relMsgId) {
-            inReplyTo = relMsgId;
-            const relRefs = relFull.headers["references"]?.[0];
-            references = relRefs ? `${relRefs} ${relMsgId}` : relMsgId;
-          }
+          ({ inReplyTo, references } = buildThreadingHeaders(relFull));
         } catch (e) {
           console.warn("[PostGuard] Could not fetch related message headers:", e);
         }
@@ -478,21 +425,11 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       });
 
       // Serialize recipients for the popup
-      const customPolicies = state.policy;
-      const allRecipients = [...details.to, ...details.cc];
-      const serializedRecipients: SerializedRecipient[] = allRecipients.map((r: string) => {
-        const id = toEmail(r);
-        if (customPolicies && customPolicies[id]) {
-          return {
-            type: "email" as const,
-            email: id,
-            policy: customPolicies[id].map(({ t, v }) =>
-              t === EMAIL_ATTRIBUTE_TYPE ? { t, v: v.toLowerCase() } : { t, v }
-            ),
-          };
-        }
-        return { type: "email" as const, email: id };
-      });
+      const serializedRecipients: SerializedRecipient[] = serializeRecipients(
+        details.to,
+        details.cc,
+        state.policy,
+      );
 
       const from = toEmail(details.from);
 
@@ -530,7 +467,6 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       // pg-js 1.1.0+ may already decide to skip the attachment in tier 3.
       // We additionally enforce a stricter 5 MB local cap for Thunderbird
       // (some SMTP servers refuse messages larger than that).
-      const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
       if (
         result.attachmentBase64 != null &&
         result.attachmentSize <= MAX_ATTACHMENT_SIZE
@@ -749,11 +685,14 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
     // Tier 1/2: ciphertext lives in the postguard.encrypted attachment.
     // Tier 3: no attachment — we extract the Cryptify uuid from the body
     // and let the popup fetch+decrypt via pg.open({ uuid }).
-    const ciphertext = extractCiphertext({
+    const rawCiphertext = extractCiphertext({
       htmlBody: htmlBody ?? undefined,
       attachments: attData,
     });
-    const uploadUuid = ciphertext ? null : extractUploadUuid(htmlBody ?? "");
+    const { ciphertext, uploadUuid } = chooseDecryptionInput(
+      rawCiphertext,
+      rawCiphertext ? null : extractUploadUuid(htmlBody ?? ""),
+    );
 
     if (!ciphertext && !uploadUuid) {
       console.error("[PostGuard] No ciphertext or upload uuid found in message");
