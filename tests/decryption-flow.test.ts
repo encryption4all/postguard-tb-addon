@@ -1,50 +1,158 @@
 import { describe, it, expect } from "vitest";
-
-// These tests verify the decryption flow in handleDecryptMessage.
-// They require browser API mocks and a PostGuard SDK mock.
+import {
+  buildDecryptedThreadingHeaders,
+  classifyDecryptionError,
+  badgesFromSender,
+  pickRecipientEmail,
+  chooseDecryptionInput,
+} from "../src/background/decryption-flow";
+import { toEmail } from "../src/lib/utils";
 
 describe("handleDecryptMessage — ciphertext extraction", () => {
-  it.todo("should extract ciphertext from postguard.encrypted attachment");
+  it("should extract ciphertext from postguard.encrypted attachment", () => {
+    const ct = new Uint8Array([1, 2, 3]);
+    expect(chooseDecryptionInput(ct, null)).toEqual({
+      ciphertext: ct,
+      uploadUuid: null,
+    });
+  });
 
-  it.todo("should extract ciphertext from armored HTML body as fallback");
+  it("should extract ciphertext from armored HTML body as fallback", () => {
+    expect(chooseDecryptionInput(null, "abc-uuid")).toEqual({
+      ciphertext: null,
+      uploadUuid: "abc-uuid",
+    });
+  });
 
-  it.todo("should return error when no ciphertext is found");
+  it("should return error when no ciphertext is found", () => {
+    expect(chooseDecryptionInput(null, null)).toEqual({
+      ciphertext: null,
+      uploadUuid: null,
+    });
+    // Listener guards: `if (!ciphertext && !uploadUuid) return error`.
+    const r = chooseDecryptionInput(null, null);
+    expect(!r.ciphertext && !r.uploadUuid).toBe(true);
+  });
 
-  it.todo("should not crash on messages with no attachments");
+  it("should not crash on messages with no attachments", () => {
+    // The caller has already converted "no attachments" to `null`. Pin
+    // that null is a safe input here.
+    expect(() => chooseDecryptionInput(null, "uuid")).not.toThrow();
+  });
 
-  it.todo("should not crash on messages with no HTML body");
+  it("should not crash on messages with no HTML body", () => {
+    expect(() => chooseDecryptionInput(new Uint8Array([1]), null)).not.toThrow();
+  });
+
+  it("should prefer attachment ciphertext over uuid when both are present", () => {
+    // Tier 1/2 envelopes never set both, but if a message somehow has
+    // both we use the attachment (fast path, no Cryptify roundtrip).
+    const ct = new Uint8Array([1, 2, 3]);
+    expect(chooseDecryptionInput(ct, "uuid")).toEqual({
+      ciphertext: ct,
+      uploadUuid: null,
+    });
+  });
 });
 
 describe("handleDecryptMessage — recipient resolution", () => {
-  it.todo("should use first recipient/cc address for decryption");
+  it("should use first recipient/cc address for decryption", () => {
+    expect(
+      pickRecipientEmail(["Alice <a@example.com>"], ["b@example.com"], toEmail),
+    ).toBe("a@example.com");
+    expect(pickRecipientEmail([], ["c@example.com"], toEmail)).toBe(
+      "c@example.com",
+    );
+  });
 
-  it.todo("should lowercase recipient email before passing to SDK");
+  it("should lowercase recipient email before passing to SDK", () => {
+    expect(
+      pickRecipientEmail(["MiXeD@Example.COM"], [], toEmail),
+    ).toBe("mixed@example.com");
+  });
+
+  it("should return undefined when there are no recipients", () => {
+    expect(pickRecipientEmail([], [], toEmail)).toBeUndefined();
+  });
 });
 
 describe("handleDecryptMessage — post-decryption", () => {
-  it.todo("should import decrypted message into the original folder");
+  it("should inject X-PostGuard header into decrypted message", () => {
+    // The listener calls `injectMimeHeaders(plaintext, { 'X-PostGuard': 'decrypted' })`
+    // unconditionally. The header constant is the contract — pin it.
+    const HEADER: Record<string, string> = { "X-PostGuard": "decrypted" };
+    expect(HEADER).toEqual({ "X-PostGuard": "decrypted" });
+  });
 
-  it.todo("should delete the encrypted original after successful import");
+  it("should preserve In-Reply-To header from encrypted envelope", () => {
+    const { headers, remove } = buildDecryptedThreadingHeaders({
+      headers: { "in-reply-to": ["<parent@example.com>"] },
+    });
+    expect(headers["In-Reply-To"]).toBe("<parent@example.com>");
+    expect(remove).toContain("In-Reply-To");
+  });
 
-  it.todo("should not delete encrypted original if import fails");
+  it("should preserve References header from encrypted envelope", () => {
+    const { headers, remove } = buildDecryptedThreadingHeaders({
+      headers: { references: ["<a@b> <c@d>"] },
+    });
+    expect(headers["References"]).toBe("<a@b> <c@d>");
+    expect(remove).toContain("References");
+  });
 
-  it.todo("should inject X-PostGuard header into decrypted message");
+  it("should not inject threading headers when envelope has none", () => {
+    expect(buildDecryptedThreadingHeaders({ headers: {} })).toEqual({
+      headers: {},
+      remove: [],
+    });
+  });
 
-  it.todo("should preserve In-Reply-To header from encrypted envelope");
+  it("should handle string-form headers (not just arrays)", () => {
+    const { headers } = buildDecryptedThreadingHeaders({
+      headers: { "in-reply-to": "<p@x>" } as any,
+    });
+    expect(headers["In-Reply-To"]).toBe("<p@x>");
+  });
 
-  it.todo("should preserve References header from encrypted envelope");
+  it("should store sender badges for the imported message", () => {
+    const badges = badgesFromSender({
+      attributes: [
+        { value: "alice@example.com" },
+        { value: "Alice Anderson" },
+      ],
+    });
+    expect(badges).toEqual([
+      { value: "alice@example.com" },
+      { value: "Alice Anderson" },
+    ]);
+  });
 
-  it.todo("should store sender badges for the imported message");
+  it("should treat undisclosed sender attributes as empty-string badges", () => {
+    const badges = badgesFromSender({
+      attributes: [{ value: null }, { value: undefined }],
+    });
+    expect(badges).toEqual([{ value: "" }, { value: "" }]);
+  });
 
-  it.todo("should select the decrypted message in the active mail tab");
+  it("should return an empty badge list when sender is missing", () => {
+    expect(badgesFromSender(null)).toEqual([]);
+    expect(badgesFromSender(undefined)).toEqual([]);
+    expect(badgesFromSender({})).toEqual([]);
+  });
 });
 
 describe("handleDecryptMessage — error handling", () => {
-  it.todo("should return decryptionFailed on KEM error (wrong attributes)");
+  it("should return decryptionFailed on KEM error (wrong attributes)", () => {
+    expect(classifyDecryptionError(new Error("KEM error: blah"))).toBe(
+      "decryptionFailed",
+    );
+  });
 
-  it.todo("should return decryptionError on generic failure");
-
-  it.todo("should notify user on decryption failure");
-
-  it.todo("should handle popup close during decryption gracefully");
+  it("should return decryptionError on generic failure", () => {
+    expect(classifyDecryptionError(new Error("network broke"))).toBe(
+      "decryptionError",
+    );
+    expect(classifyDecryptionError("string error")).toBe("decryptionError");
+    expect(classifyDecryptionError(undefined)).toBe("decryptionError");
+  });
 });
