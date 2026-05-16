@@ -15,6 +15,7 @@ import type {
   DecryptPopupData,
 } from "../../lib/types";
 import { EMAIL_ATTRIBUTE_TYPE } from "../../lib/utils";
+import { buildRecipients } from "./recipients";
 
 // console.log calls are stripped in release builds by esbuild's `pure` option
 
@@ -102,19 +103,7 @@ async function handleEncrypt(pg: PostGuard, data: EncryptPopupData, windowId: nu
   const mimeData = fromBase64(data.mimeDataBase64);
 
   // Rebuild typed recipients from serialized data
-  const recipients: Recipient[] = data.recipients.map((r) => {
-    const base = r.type === "emailDomain"
-      ? pg.recipient.emailDomain(r.email)
-      : pg.recipient.email(r.email);
-    if (r.policy) {
-      for (const attr of r.policy) {
-        if (attr.t !== EMAIL_ATTRIBUTE_TYPE) {
-          base.extraAttribute(attr.t, attr.v);
-        }
-      }
-    }
-    return base;
-  });
+  const recipients: Recipient[] = buildRecipients(pg.recipient, data.recipients);
 
   // Encrypt with element-based Yivi signing
   const sealed = pg.encrypt({
