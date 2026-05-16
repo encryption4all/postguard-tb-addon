@@ -25,10 +25,8 @@ import { isPGEncrypted, wasPGEncrypted } from "../lib/detection";
 import { dispatchRuntimeMessage } from "./runtime-router";
 import { handleAfterSend } from "./sent-copy";
 import {
-  serializeRecipients,
-  buildThreadingHeaders,
   evaluateBeforeSendGuards,
-  MAX_ATTACHMENT_SIZE,
+  runBeforeSendEncryption,
 } from "./encryption-flow";
 import {
   buildDecryptedThreadingHeaders,
@@ -248,7 +246,7 @@ async function shouldEncrypt(tabId: number): Promise<boolean> {
 
 // --- Alarm keepalive for onBeforeSend ---
 
-function keepAlive(name: string, promise: Promise<unknown>) {
+function keepAlive<T>(name: string, promise: Promise<T>): Promise<T> {
   const listener = (alarm: { name: string }) => {
     if (alarm.name === name) {
       console.log(`[PostGuard] Keepalive: waiting for ${name}`);
@@ -376,130 +374,29 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
     return { cancel: true };
   }
 
-  const { promise, resolve } = Promise.withResolvers<
-    { cancel?: boolean; details?: Partial<typeof details> } | void
-  >();
-
-  keepAlive("onBeforeSend", (async () => {
-    try {
-      const originalSubject = details.subject;
-      const date = new Date();
-
-      // Build attachments list
-      const composeAttachments = await browser.compose.listAttachments(tab.id);
-      const attachmentData = await Promise.all(
-        composeAttachments.map(async (att) => {
-          const file = await browser.compose.getAttachmentFile(att.id);
-          return {
-            name: file.name,
-            type: file.type,
-            data: await file.arrayBuffer(),
-          };
-        })
-      );
-
-      // Fetch threading headers if replying
-      let inReplyTo: string | undefined;
-      let references: string | undefined;
-      if (details.relatedMessageId) {
-        try {
-          const relFull = await browser.messages.getFull(details.relatedMessageId);
-          ({ inReplyTo, references } = buildThreadingHeaders(relFull));
-        } catch (e) {
-          console.warn("[PostGuard] Could not fetch related message headers:", e);
-        }
-      }
-
-      // Build inner MIME using SDK email helpers
-      const mimeData = buildMime({
-        from: details.from,
-        to: [...details.to],
-        cc: [...details.cc],
-        subject: originalSubject,
-        htmlBody: details.isPlainText ? undefined : details.body,
-        plainTextBody: details.isPlainText ? details.plainTextBody : undefined,
-        date,
-        inReplyTo,
-        references,
-        attachments: attachmentData,
-      });
-
-      // Serialize recipients for the popup
-      const serializedRecipients: SerializedRecipient[] = serializeRecipients(
-        details.to,
-        details.cc,
-        state.policy,
-      );
-
-      const from = toEmail(details.from);
-
-      // Collect sender signing attributes if configured
-      const signIdPolicy = state.signId;
-      const senderAttributes = signIdPolicy?.[from]?.filter(
-        (attr) => attr.t !== EMAIL_ATTRIBUTE_TYPE
-      );
-
-      // Remove original attachments before popup (so they don't send unencrypted)
-      for (const att of composeAttachments) {
-        await browser.compose.removeAttachment(tab.id, att.id);
-      }
-
-      // Delegate encryption to popup — popup creates its own pg instance,
-      // renders Yivi QR, encrypts, and returns the envelope. The popup
-      // also forwards pg-js's `onUploadInit` callback as a
-      // `cryptoPopupUploadInit` message, which we associate back to this
-      // compose tab via the `composeTabId` thread.
-      const result = await openCryptoPopup({
-        operation: "encrypt",
-        config: {
-          pkgUrl: PKG_URL!,
-          cryptifyUrl: CRYPTIFY_URL,
-          headers: PG_CLIENT_HEADER,
-        },
-        mimeDataBase64: toBase64(mimeData),
-        recipients: serializedRecipients,
-        senderEmail: from,
-        from: details.from,
-        websiteUrl: POSTGUARD_WEBSITE_URL,
-        senderAttributes,
-      }, tab.id) as EncryptPopupResult;
-
-      // pg-js 1.1.0+ may already decide to skip the attachment in tier 3.
-      // We additionally enforce a stricter 5 MB local cap for Thunderbird
-      // (some SMTP servers refuse messages larger than that).
-      if (
-        result.attachmentBase64 != null &&
-        result.attachmentSize <= MAX_ATTACHMENT_SIZE
-      ) {
-        const attBytes = fromBase64(result.attachmentBase64);
-        const attFile = new File([attBytes as BlobPart], "postguard.encrypted", {
-          type: "application/postguard; charset=utf-8",
-        });
-        await browser.compose.addAttachment(tab.id, { file: attFile });
-      }
-
-      // Store MIME data for sent copy
-      state.sentMimeData = mimeData;
-
-      // Replace body and subject, and tag the outgoing message with the
-      // x-postguard header so the Outlook add-in's OnMessageRead launch
-      // event fires on receipt.
-      resolve({
-        details: {
-          subject: result.subject,
-          body: result.htmlBody,
-          plainTextBody: result.plainTextBody,
-          customHeaders: [{ name: "x-postguard", value: X_POSTGUARD_VERSION }],
-        },
-      });
-    } catch (e) {
-      console.error("[PostGuard] Encryption failed:", e);
-      notifyError("encryptionError");
-      resolve({ cancel: true });
-    }
-  })());
-
-  return promise;
+  return keepAlive(
+    "onBeforeSend",
+    runBeforeSendEncryption(state, details, tab.id, {
+      listAttachments: (tabId) => browser.compose.listAttachments(tabId),
+      getAttachmentFile: (attId) => browser.compose.getAttachmentFile(attId),
+      getFullMessage: (msgId) => browser.messages.getFull(msgId),
+      removeAttachment: (tabId, attId) =>
+        browser.compose.removeAttachment(tabId, attId),
+      addAttachment: (tabId, opts) => browser.compose.addAttachment(tabId, opts),
+      openCryptoPopup,
+      notifyError,
+      buildMime,
+      pkgUrl: PKG_URL!,
+      cryptifyUrl: CRYPTIFY_URL,
+      websiteUrl: POSTGUARD_WEBSITE_URL,
+      pgClientHeader: PG_CLIENT_HEADER,
+      xPostguardVersion: X_POSTGUARD_VERSION,
+    }).then((outcome) => {
+      if (outcome.sentMimeData) state.sentMimeData = outcome.sentMimeData;
+      if (outcome.cancel) return { cancel: true };
+      return { details: outcome.details };
+    }),
+  );
 }
 
 async function handleQueryMessageState(tabId: number | undefined) {

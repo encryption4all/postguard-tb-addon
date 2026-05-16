@@ -1,7 +1,14 @@
 /// <reference path="../types/thunderbird.d.ts" />
 
-import type { Policy, SerializedRecipient } from "../lib/types";
+import type {
+  Policy,
+  SerializedRecipient,
+  CryptoPopupInitData,
+  CryptoPopupResult,
+  EncryptPopupResult,
+} from "../lib/types";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE } from "../lib/utils";
+import { toBase64, fromBase64 } from "../lib/encoding";
 
 // Pure helpers pulled out of `handleBeforeSend` so the recipient /
 // threading-header logic can be exercised in isolation under vitest.
@@ -91,4 +98,205 @@ export function buildThreadingHeaders(
     inReplyTo: relMsgId,
     references: relRefs ? `${relRefs} ${relMsgId}` : relMsgId,
   };
+}
+
+// --- Encryption pipeline (lifted from handleBeforeSend's keepAlive closure) ---
+
+export interface AttachmentRef {
+  id: number;
+}
+
+export interface AttachmentInput {
+  name: string;
+  type: string;
+  data: ArrayBuffer;
+}
+
+export interface BeforeSendDetails {
+  from: string;
+  to: readonly string[];
+  cc: readonly string[];
+  bcc?: readonly string[];
+  subject: string;
+  body?: string;
+  plainTextBody?: string;
+  isPlainText?: boolean;
+  relatedMessageId?: number;
+}
+
+export interface BeforeSendState {
+  encrypt: boolean;
+  policy?: Policy;
+  signId?: Policy;
+  sentMimeData?: Uint8Array;
+}
+
+export interface RunBeforeSendDeps {
+  listAttachments: (tabId: number) => Promise<AttachmentRef[]>;
+  getAttachmentFile: (attId: number) => Promise<{
+    name: string;
+    type: string;
+    arrayBuffer: () => Promise<ArrayBuffer>;
+  }>;
+  getFullMessage: (messageId: number) => Promise<{
+    headers: Record<string, string[] | string | undefined>;
+  } | null>;
+  removeAttachment: (tabId: number, attId: number) => Promise<void>;
+  addAttachment: (tabId: number, opts: { file: File }) => Promise<void>;
+  openCryptoPopup: (
+    data: CryptoPopupInitData,
+    composeTabId?: number,
+  ) => Promise<CryptoPopupResult>;
+  notifyError: (messageKey: string) => void;
+  buildMime: (input: {
+    from: string;
+    to: string[];
+    cc: string[];
+    subject: string;
+    htmlBody?: string;
+    plainTextBody?: string;
+    date: Date;
+    inReplyTo?: string;
+    references?: string;
+    attachments: AttachmentInput[];
+  }) => Uint8Array;
+  pkgUrl: string;
+  cryptifyUrl?: string;
+  websiteUrl?: string;
+  pgClientHeader: Record<string, string>;
+  xPostguardVersion: string;
+}
+
+export interface BeforeSendOutcome {
+  cancel?: boolean;
+  details?: {
+    subject: string;
+    body: string;
+    plainTextBody: string;
+    customHeaders: { name: string; value: string }[];
+  };
+  /** Populated on success — caller assigns to state.sentMimeData so
+   *  the onAfterSend handler can stash a plaintext copy in Sent. */
+  sentMimeData?: Uint8Array;
+}
+
+/**
+ * The encryption body that used to live inside `handleBeforeSend`'s
+ * `keepAlive` closure. Lifted out so the failure / cancel / leak-guard
+ * paths can be exercised without driving the full WebExtension surface.
+ *
+ * All Thunderbird and pg-js surfaces are injected via `deps`; the
+ * function returns the value the listener should resolve with. On any
+ * thrown error (including popup-closed) it notifies the user, returns
+ * `{ cancel: true }`, and never returns a `details` block — so a
+ * partial / failed encryption can't leak plaintext through subject or
+ * body.
+ */
+export async function runBeforeSendEncryption(
+  state: BeforeSendState,
+  details: BeforeSendDetails,
+  tabId: number,
+  deps: RunBeforeSendDeps,
+): Promise<BeforeSendOutcome> {
+  try {
+    const originalSubject = details.subject;
+    const date = new Date();
+
+    const composeAttachments = await deps.listAttachments(tabId);
+    const attachmentData: AttachmentInput[] = await Promise.all(
+      composeAttachments.map(async (att) => {
+        const file = await deps.getAttachmentFile(att.id);
+        return {
+          name: file.name,
+          type: file.type,
+          data: await file.arrayBuffer(),
+        };
+      }),
+    );
+
+    let inReplyTo: string | undefined;
+    let references: string | undefined;
+    if (details.relatedMessageId) {
+      try {
+        const relFull = await deps.getFullMessage(details.relatedMessageId);
+        ({ inReplyTo, references } = buildThreadingHeaders(relFull));
+      } catch (e) {
+        console.warn("[PostGuard] Could not fetch related message headers:", e);
+      }
+    }
+
+    const mimeData = deps.buildMime({
+      from: details.from,
+      to: [...details.to],
+      cc: [...details.cc],
+      subject: originalSubject,
+      htmlBody: details.isPlainText ? undefined : details.body,
+      plainTextBody: details.isPlainText ? details.plainTextBody : undefined,
+      date,
+      inReplyTo,
+      references,
+      attachments: attachmentData,
+    });
+
+    const serializedRecipients: SerializedRecipient[] = serializeRecipients(
+      details.to,
+      details.cc,
+      state.policy,
+    );
+
+    const from = toEmail(details.from);
+    const signIdPolicy = state.signId;
+    const senderAttributes = signIdPolicy?.[from]?.filter(
+      (attr) => attr.t !== EMAIL_ATTRIBUTE_TYPE,
+    );
+
+    for (const att of composeAttachments) {
+      await deps.removeAttachment(tabId, att.id);
+    }
+
+    const result = (await deps.openCryptoPopup(
+      {
+        operation: "encrypt",
+        config: {
+          pkgUrl: deps.pkgUrl,
+          cryptifyUrl: deps.cryptifyUrl,
+          headers: deps.pgClientHeader,
+        },
+        mimeDataBase64: toBase64(mimeData),
+        recipients: serializedRecipients,
+        senderEmail: from,
+        from: details.from,
+        websiteUrl: deps.websiteUrl,
+        senderAttributes,
+      },
+      tabId,
+    )) as EncryptPopupResult;
+
+    if (
+      result.attachmentBase64 != null &&
+      result.attachmentSize <= MAX_ATTACHMENT_SIZE
+    ) {
+      const attBytes = fromBase64(result.attachmentBase64);
+      const attFile = new File([attBytes as BlobPart], "postguard.encrypted", {
+        type: "application/postguard; charset=utf-8",
+      });
+      await deps.addAttachment(tabId, { file: attFile });
+    }
+
+    return {
+      sentMimeData: mimeData,
+      details: {
+        subject: result.subject,
+        body: result.htmlBody,
+        plainTextBody: result.plainTextBody,
+        customHeaders: [
+          { name: "x-postguard", value: deps.xPostguardVersion },
+        ],
+      },
+    };
+  } catch (e) {
+    console.error("[PostGuard] Encryption failed:", e);
+    deps.notifyError("encryptionError");
+    return { cancel: true };
+  }
 }

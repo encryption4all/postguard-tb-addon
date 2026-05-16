@@ -1,9 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   serializeRecipients,
   buildThreadingHeaders,
   evaluateBeforeSendGuards,
+  runBeforeSendEncryption,
   MAX_ATTACHMENT_SIZE,
+  type RunBeforeSendDeps,
+  type BeforeSendDetails,
+  type BeforeSendState,
 } from "../src/background/encryption-flow";
 import type { Policy } from "../src/lib/types";
 
@@ -193,16 +197,94 @@ describe("handleBeforeSend — threading headers", () => {
 });
 
 describe("handleBeforeSend — error recovery", () => {
-  // These three live in the catch block of the listener's keepAlive
-  // closure inside background.ts. They cannot be reached without
-  // extracting the listener body itself behind injected deps
-  // (openCryptoPopup + buildMime + notifyError), which is a separate
-  // refactor. Left as todos rather than written as shape checks —
-  // a shape check that doesn't drive the code is just noise.
+  function makeDeps(overrides: Partial<RunBeforeSendDeps> = {}): {
+    deps: RunBeforeSendDeps;
+    notifyError: ReturnType<typeof vi.fn>;
+    removeAttachment: ReturnType<typeof vi.fn>;
+    addAttachment: ReturnType<typeof vi.fn>;
+  } {
+    const notifyError = vi.fn();
+    const removeAttachment = vi.fn(async () => undefined);
+    const addAttachment = vi.fn(async () => undefined);
+    const deps: RunBeforeSendDeps = {
+      listAttachments: async () => [],
+      getAttachmentFile: async () => ({
+        name: "x",
+        type: "x",
+        arrayBuffer: async () => new ArrayBuffer(0),
+      }),
+      getFullMessage: async () => null,
+      removeAttachment,
+      addAttachment,
+      openCryptoPopup: async () => {
+        throw new Error("default — override in test");
+      },
+      notifyError,
+      buildMime: () => new Uint8Array([1, 2, 3]),
+      pkgUrl: "https://pkg.example",
+      cryptifyUrl: "https://cry.example",
+      websiteUrl: "https://site.example",
+      pgClientHeader: {},
+      xPostguardVersion: "0.1.0",
+      ...overrides,
+    };
+    return { deps, notifyError, removeAttachment, addAttachment };
+  }
 
-  it.todo("should cancel send and notify on encryption failure");
+  const state: BeforeSendState = { encrypt: true };
+  const details: BeforeSendDetails = {
+    from: "me@example.com",
+    to: ["alice@example.com"],
+    cc: [],
+    subject: "hi",
+    body: "<p>hi</p>",
+    isPlainText: false,
+  };
 
-  it.todo("should cancel send when popup is closed by user");
+  it("should cancel send and notify on encryption failure", async () => {
+    const { deps, notifyError, addAttachment } = makeDeps({
+      openCryptoPopup: async () => {
+        throw new Error("encryption boom");
+      },
+    });
+    const out = await runBeforeSendEncryption(state, details, 1, deps);
+    expect(out.cancel).toBe(true);
+    expect(out.details).toBeUndefined();
+    expect(notifyError).toHaveBeenCalledWith("encryptionError");
+    expect(addAttachment).not.toHaveBeenCalled();
+  });
 
-  it.todo("should not leak plaintext in compose body on failure");
+  it("should cancel send when popup is closed by user", async () => {
+    const { deps, notifyError } = makeDeps({
+      openCryptoPopup: async () => {
+        throw new Error("Popup closed");
+      },
+    });
+    const out = await runBeforeSendEncryption(state, details, 1, deps);
+    expect(out.cancel).toBe(true);
+    expect(out.details).toBeUndefined();
+    // Same catch arm as any other failure — notify and cancel.
+    expect(notifyError).toHaveBeenCalledWith("encryptionError");
+  });
+
+  it("should not leak plaintext in compose body on failure", async () => {
+    // If the popup throws AFTER the buildMime call, the returned
+    // outcome must not include any details — otherwise Thunderbird
+    // would replace the compose body with whatever partial value we
+    // surfaced. Pin: failure produces { cancel: true } and nothing else
+    // (no subject, no body, no plainTextBody, no customHeaders).
+    const { deps } = makeDeps({
+      openCryptoPopup: async () => {
+        throw new Error("anywhere");
+      },
+    });
+    const out = await runBeforeSendEncryption(
+      state,
+      { ...details, body: "PLAINTEXT-SECRET" },
+      1,
+      deps,
+    );
+    expect(out).toEqual({ cancel: true });
+    expect(out.sentMimeData).toBeUndefined();
+  });
 });
