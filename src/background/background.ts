@@ -22,6 +22,12 @@ import { toBase64, fromBase64 } from "../lib/encoding";
 import { toEmail, EMAIL_ATTRIBUTE_TYPE, findHtmlBody } from "../lib/utils";
 import { getOrCreateLocalFolder } from "../lib/folders";
 import { isPGEncrypted, wasPGEncrypted } from "../lib/detection";
+import {
+  serializeRecipients,
+  buildThreadingHeaders,
+  evaluateBeforeSendGuards,
+  MAX_ATTACHMENT_SIZE,
+} from "./encryption-flow";
 import type {
   Policy,
   SerializedRecipient,
@@ -402,18 +408,18 @@ function handleCryptoPopupUploadInit(
 
 async function handleBeforeSend(tab: { id: number }, details: any) {
   const state = composeTabs.get(tab.id);
-  if (!state?.encrypt) return;
-
-  if (details.bcc.length > 0) {
-    notifyError("composeBccWarning");
-    return { cancel: true };
-  }
-
-  if (state.configWindowId) {
-    await browser.windows.update(state.configWindowId, {
-      drawAttention: true,
-      focused: true,
-    });
+  const guard = evaluateBeforeSendGuards(state, details);
+  // After the guard returns null the state is guaranteed encrypt:true.
+  if (guard || !state) {
+    if (!guard || guard.kind === "skip") return;
+    if (guard.reason === "bcc") {
+      notifyError("composeBccWarning");
+    } else if (guard.reason === "policyEditorOpen" && state?.configWindowId) {
+      await browser.windows.update(state.configWindowId, {
+        drawAttention: true,
+        focused: true,
+      });
+    }
     return { cancel: true };
   }
 
@@ -445,12 +451,7 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       if (details.relatedMessageId) {
         try {
           const relFull = await browser.messages.getFull(details.relatedMessageId);
-          const relMsgId = relFull.headers["message-id"]?.[0];
-          if (relMsgId) {
-            inReplyTo = relMsgId;
-            const relRefs = relFull.headers["references"]?.[0];
-            references = relRefs ? `${relRefs} ${relMsgId}` : relMsgId;
-          }
+          ({ inReplyTo, references } = buildThreadingHeaders(relFull));
         } catch (e) {
           console.warn("[PostGuard] Could not fetch related message headers:", e);
         }
@@ -471,21 +472,11 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       });
 
       // Serialize recipients for the popup
-      const customPolicies = state.policy;
-      const allRecipients = [...details.to, ...details.cc];
-      const serializedRecipients: SerializedRecipient[] = allRecipients.map((r: string) => {
-        const id = toEmail(r);
-        if (customPolicies && customPolicies[id]) {
-          return {
-            type: "email" as const,
-            email: id,
-            policy: customPolicies[id].map(({ t, v }) =>
-              t === EMAIL_ATTRIBUTE_TYPE ? { t, v: v.toLowerCase() } : { t, v }
-            ),
-          };
-        }
-        return { type: "email" as const, email: id };
-      });
+      const serializedRecipients: SerializedRecipient[] = serializeRecipients(
+        details.to,
+        details.cc,
+        state.policy,
+      );
 
       const from = toEmail(details.from);
 
@@ -523,7 +514,6 @@ async function handleBeforeSend(tab: { id: number }, details: any) {
       // pg-js 1.1.0+ may already decide to skip the attachment in tier 3.
       // We additionally enforce a stricter 5 MB local cap for Thunderbird
       // (some SMTP servers refuse messages larger than that).
-      const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
       if (
         result.attachmentBase64 != null &&
         result.attachmentSize <= MAX_ATTACHMENT_SIZE
