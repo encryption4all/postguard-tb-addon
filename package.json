@@ -19,6 +19,6 @@
     "vitest": "^4.1.6"
   },
   "dependencies": {
-    "@e4a/pg-js": "^1.7.1"
+    "@e4a/pg-js": "^1.8.0"
   }
 }

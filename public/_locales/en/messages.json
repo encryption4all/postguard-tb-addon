@@ -119,6 +119,9 @@
   "sentCopyError": {
     "message": "Failed to save the sent copy of your encrypted message."
   },
+  "uploadSessionExpired": {
+    "message": "The encrypted upload session expired before it could finish. Please send the message again."
+  },
   "decryptingButton": {
     "message": "Decrypting..."
   }
