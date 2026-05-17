@@ -28,6 +28,44 @@ export interface SentCopyDeps {
   getOrCreateLocalFolder: (
     name: string,
   ) => Promise<{ id: unknown } | undefined>;
+  getFullMessage: (msgId: number) => Promise<{
+    headers: Record<string, string[] | string | undefined>;
+  } | null>;
+  injectMimeHeaders: (
+    mime: string,
+    headers: Record<string, string>,
+    remove?: string[],
+  ) => string;
+}
+
+/**
+ * Stamp the encrypted envelope's `Message-ID` onto the stashed plaintext
+ * MIME. `buildMime` doesn't emit one, so the Sent-folder copy is otherwise
+ * an ID-less message — replies to it can't form a valid `In-Reply-To` and
+ * threading silently breaks. Returns the original bytes unchanged when the
+ * envelope has no Message-ID.
+ */
+export function stampSentMessageId(
+  sentMime: Uint8Array,
+  envelopeMessageId: string | undefined,
+  injectMimeHeaders: SentCopyDeps["injectMimeHeaders"],
+): Uint8Array {
+  if (!envelopeMessageId) return sentMime;
+  const text = new TextDecoder().decode(sentMime);
+  const patched = injectMimeHeaders(
+    text,
+    { "Message-ID": envelopeMessageId },
+    ["Message-ID"],
+  );
+  return new TextEncoder().encode(patched);
+}
+
+function readMessageIdHeader(
+  full: { headers: Record<string, string[] | string | undefined> } | null | undefined,
+): string | undefined {
+  if (!full) return undefined;
+  const raw = full.headers["message-id"];
+  return Array.isArray(raw) ? raw[0] : raw;
 }
 
 /**
@@ -49,7 +87,23 @@ export async function handleAfterSend(
       if (!(await deps.isPGEncrypted(msg.id))) continue;
       const localFolder = await deps.getOrCreateLocalFolder("PostGuard Sent");
       if (!localFolder) continue;
-      const file = new File([state.sentMimeData as BlobPart], "sent.eml", {
+      let mimeToImport = state.sentMimeData;
+      try {
+        const envelopeMessageId = readMessageIdHeader(
+          await deps.getFullMessage(msg.id),
+        );
+        mimeToImport = stampSentMessageId(
+          mimeToImport,
+          envelopeMessageId,
+          deps.injectMimeHeaders,
+        );
+      } catch (e) {
+        console.warn(
+          "[PostGuard] Could not read envelope Message-ID for Sent copy:",
+          e,
+        );
+      }
+      const file = new File([mimeToImport as BlobPart], "sent.eml", {
         type: "text/plain",
       });
       const localMsg = await browser.messages.import(

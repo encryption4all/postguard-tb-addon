@@ -107,6 +107,32 @@ describe("handleDecryptMessage — post-decryption", () => {
     });
   });
 
+  it("should preserve Message-ID from encrypted envelope", () => {
+    const { headers, remove } = buildDecryptedThreadingHeaders({
+      headers: { "message-id": ["<env-A@example.com>"] },
+    });
+    expect(headers["Message-ID"]).toBe("<env-A@example.com>");
+    expect(remove).toContain("Message-ID");
+  });
+
+  it("should surface Message-ID, In-Reply-To, and References together", () => {
+    const { headers, remove } = buildDecryptedThreadingHeaders({
+      headers: {
+        "message-id": ["<env-B@x>"],
+        "in-reply-to": ["<env-A@x>"],
+        references: ["<env-A@x>"],
+      },
+    });
+    expect(headers).toEqual({
+      "Message-ID": "<env-B@x>",
+      "In-Reply-To": "<env-A@x>",
+      References: "<env-A@x>",
+    });
+    expect(remove.sort()).toEqual(
+      ["In-Reply-To", "Message-ID", "References"].sort(),
+    );
+  });
+
   it("should handle string-form headers (not just arrays)", () => {
     const { headers } = buildDecryptedThreadingHeaders({
       headers: { "in-reply-to": "<p@x>" } as any,

@@ -119,6 +119,8 @@ browser.compose.onAfterSend.addListener((tab, sendInfo) =>
     notifyError,
     isPGEncrypted,
     getOrCreateLocalFolder,
+    getFullMessage: (msgId) => browser.messages.getFull(msgId),
+    injectMimeHeaders,
   }),
 );
 

@@ -50,23 +50,32 @@ export interface DecryptedThreadingHeaders {
 }
 
 /**
- * Pull `In-Reply-To` and `References` from the encrypted envelope's
- * headers and shape them for `injectMimeHeaders`: the `headers` map goes
- * onto the plaintext, and the `remove` list drops any pre-existing
+ * Pull `Message-ID`, `In-Reply-To`, and `References` from the encrypted
+ * envelope's headers and shape them for `injectMimeHeaders`: the `headers`
+ * map goes onto the plaintext, and the `remove` list drops any pre-existing
  * occurrence so we don't end up with two copies.
+ *
+ * `Message-ID` is part of this set because `buildMime` (the inner-plaintext
+ * builder in pg-js) does not emit one. Without it, replies to the
+ * decrypted message can't reference this thread by ID, which silently
+ * breaks threading from this point onward.
  */
 export function buildDecryptedThreadingHeaders(
   envelopeFull: { headers: Record<string, string[] | string | undefined> },
 ): DecryptedThreadingHeaders {
   const headers: Record<string, string> = {};
   const remove: string[] = [];
-  for (const name of ["in-reply-to", "references"] as const) {
-    const raw = envelopeFull.headers[name];
+  const map = {
+    "message-id": "Message-ID",
+    "in-reply-to": "In-Reply-To",
+    references: "References",
+  } as const;
+  for (const lower of Object.keys(map) as Array<keyof typeof map>) {
+    const raw = envelopeFull.headers[lower];
     const val = Array.isArray(raw) ? raw[0] : raw;
     if (val) {
-      const headerName = name === "in-reply-to" ? "In-Reply-To" : "References";
-      headers[headerName] = val;
-      remove.push(headerName);
+      headers[map[lower]] = val;
+      remove.push(map[lower]);
     }
   }
   return { headers, remove };
