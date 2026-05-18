@@ -171,6 +171,11 @@ const extVersion = browser.runtime.getManifest().version;
 
 PG_CLIENT_HEADER = {
   "X-PostGuard-Client-Version": `Thunderbird,${tbVersion},pg4tb,${extVersion}`,
+  // Identifies this add-in in cryptify's per-channel upload metrics
+  // (encryption4all/cryptify#102). Explicit header avoids relying on
+  // cryptify's Origin/User-Agent fallbacks, which are environment- and
+  // host-dependent.
+  "X-Cryptify-Source": "thunderbird",
 };
 
 console.log(`[PostGuard] v${extVersion} started (Thunderbird ${tbVersion})`);
