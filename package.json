@@ -16,7 +16,7 @@
     "dotenv": "^17.4.2",
     "esbuild": "^0.28.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.7"
   },
   "dependencies": {
     "@e4a/pg-js": "^1.8.0"
