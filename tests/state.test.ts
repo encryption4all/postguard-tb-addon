@@ -244,12 +244,40 @@ describe("encryption state persistence (PR #68)", () => {
     expect(composeTabs.get(5)?.encrypt).toBe(true);
   });
 
-  it("should remove the persisted blob after restore", async () => {
-    mock.storage.local["composeTabEncryptState"] = { "5": { encrypt: true } };
+  it("should rewrite the persisted blob with current state after restore", async () => {
+    // Surviving tab plus an orphan whose tab is gone. After restore, the blob
+    // should contain only the surviving tab so the state persists across the
+    // *next* suspension instead of being wiped (the latter loses encryption
+    // after a double suspension — issue #128).
+    mock.storage.local["composeTabEncryptState"] = {
+      "5": { encrypt: true },
+      "999": { encrypt: true },
+    };
     mock.tabs = [{ id: 5, windowId: 50, type: "messageCompose" }];
 
     await restoreEncryptState();
 
-    expect(mock.storage.local["composeTabEncryptState"]).toBeUndefined();
+    const saved = mock.storage.local["composeTabEncryptState"] as Record<string, unknown>;
+    expect(saved).toBeDefined();
+    expect(Object.keys(saved)).toEqual(["5"]);
+  });
+
+  it("should survive two consecutive restores without any intervening toggle (issue #128)", async () => {
+    // Simulates: user toggles encrypt -> background suspends -> restart ->
+    // restore -> no user activity -> background suspends again -> restart ->
+    // restore. Prior to the fix the second restore found an empty blob and
+    // the encrypt flag was lost.
+    mock.storage.local["composeTabEncryptState"] = { "5": { encrypt: true } };
+    mock.tabs = [{ id: 5, windowId: 50, type: "messageCompose" }];
+
+    await restoreEncryptState();
+    expect(composeTabs.get(5)?.encrypt).toBe(true);
+
+    // Simulate a fresh background by clearing in-memory state. Storage keeps
+    // whatever the previous restore wrote.
+    composeTabs.clear();
+
+    await restoreEncryptState();
+    expect(composeTabs.get(5)?.encrypt).toBe(true);
   });
 });

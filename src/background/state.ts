@@ -92,8 +92,10 @@ export async function restoreEncryptState(): Promise<void> {
       }
     }
 
-    // Clean up stale entries
-    await browser.storage.local.remove(STORAGE_KEY);
+    // Rewrite the blob from current in-memory state. This drops orphan
+    // entries for tabs that no longer exist while keeping survivors
+    // persisted, so encrypt state outlives more than one suspension cycle.
+    await persistEncryptState();
   } catch (e) {
     console.warn("[PostGuard] Failed to restore encrypt state:", e);
   }
