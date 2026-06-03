@@ -267,6 +267,56 @@ describe("handleBeforeSend — error recovery", () => {
     expect(notifyError).toHaveBeenCalledWith("encryptionError");
   });
 
+  it("should not detach original attachments when popup throws (issue #129)", async () => {
+    // Regression: pre-fix, the loop that called removeAttachment ran
+    // *before* openCryptoPopup, so cancelling/closing the popup left
+    // the compose window with no attachments and no way to recover.
+    const { deps, removeAttachment, addAttachment, notifyError } = makeDeps({
+      listAttachments: async () => [{ id: 11 }, { id: 22 }],
+      getAttachmentFile: async () => ({
+        name: "secret.pdf",
+        type: "application/pdf",
+        arrayBuffer: async () => new ArrayBuffer(8),
+      }),
+      openCryptoPopup: async () => {
+        throw new Error("user closed the popup");
+      },
+    });
+    const out = await runBeforeSendEncryption(state, details, 1, deps);
+    expect(out).toEqual({ cancel: true });
+    expect(removeAttachment).not.toHaveBeenCalled();
+    expect(addAttachment).not.toHaveBeenCalled();
+    expect(notifyError).toHaveBeenCalledWith("encryptionError");
+  });
+
+  it("should detach originals and attach encrypted bundle on popup success", async () => {
+    // Companion to the cancel-path test: confirms that the relocated
+    // detach still runs on the happy path (one removeAttachment per
+    // original, plus one addAttachment for postguard.encrypted).
+    const { deps, removeAttachment, addAttachment } = makeDeps({
+      listAttachments: async () => [{ id: 11 }, { id: 22 }],
+      getAttachmentFile: async () => ({
+        name: "secret.pdf",
+        type: "application/pdf",
+        arrayBuffer: async () => new ArrayBuffer(8),
+      }),
+      openCryptoPopup: async () =>
+        ({
+          subject: "encrypted",
+          htmlBody: "<p>encrypted</p>",
+          plainTextBody: "encrypted",
+          attachmentBase64: "AAAA",
+          attachmentSize: 4,
+        }) as any,
+    });
+    const out = await runBeforeSendEncryption(state, details, 1, deps);
+    expect(out.cancel).toBeUndefined();
+    expect(removeAttachment).toHaveBeenCalledTimes(2);
+    expect(removeAttachment).toHaveBeenNthCalledWith(1, 1, 11);
+    expect(removeAttachment).toHaveBeenNthCalledWith(2, 1, 22);
+    expect(addAttachment).toHaveBeenCalledTimes(1);
+  });
+
   it("should not leak plaintext in compose body on failure", async () => {
     // If the popup throws AFTER the buildMime call, the returned
     // outcome must not include any details — otherwise Thunderbird

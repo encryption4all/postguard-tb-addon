@@ -250,10 +250,6 @@ export async function runBeforeSendEncryption(
       (attr) => attr.t !== EMAIL_ATTRIBUTE_TYPE,
     );
 
-    for (const att of composeAttachments) {
-      await deps.removeAttachment(tabId, att.id);
-    }
-
     const result = (await deps.openCryptoPopup(
       {
         operation: "encrypt",
@@ -271,6 +267,14 @@ export async function runBeforeSendEncryption(
       },
       tabId,
     )) as EncryptPopupResult;
+
+    // Detach originals only after the popup resolves. If it throws or
+    // the user closes it, the compose window must still hold the
+    // originals — otherwise a cancelled send silently loses the user's
+    // attachments (issue #129).
+    for (const att of composeAttachments) {
+      await deps.removeAttachment(tabId, att.id);
+    }
 
     if (
       result.attachmentBase64 != null &&
