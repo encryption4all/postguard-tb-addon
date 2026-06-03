@@ -92,9 +92,7 @@ export async function restoreEncryptState(): Promise<void> {
       }
     }
 
-    // Rewrite the blob from current in-memory state. This drops orphan
-    // entries for tabs that no longer exist while keeping survivors
-    // persisted, so encrypt state outlives more than one suspension cycle.
+    // Rewrite (don't wipe) so state survives the next suspension too.
     await persistEncryptState();
   } catch (e) {
     console.warn("[PostGuard] Failed to restore encrypt state:", e);
