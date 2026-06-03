@@ -44,8 +44,6 @@ import type {
   DecryptPopupResult,
 } from "../lib/types";
 
-const POSTGUARD_SUBJECT = "PostGuard Encrypted Email";
-
 function notifyError(messageKey: string) {
   browser.notifications.create({
     type: "basic",
@@ -671,4 +669,4 @@ async function handleDecryptMessage(messageId: number): Promise<{ ok: boolean; e
   }
 }
 
-export { PKG_URL, POSTGUARD_SUBJECT, keepAlive, isPGEncrypted, wasPGEncrypted };
+export { PKG_URL, keepAlive, isPGEncrypted, wasPGEncrypted };

@@ -8,7 +8,6 @@ export interface ComposeTabState {
   signId?: Policy;
   configWindowId?: number;
   signWindowId?: number;
-  newMsgId?: number;
   sentMimeData?: Uint8Array;
 }
 
