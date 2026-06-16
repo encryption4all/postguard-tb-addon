@@ -4,6 +4,7 @@ export {};
 import { EMAIL_ATTRIBUTE_TYPE as EMAIL_ATTR_TYPE } from "../../lib/utils";
 import { MOBILE_NUMBER_ATTR_TYPE, validateMobileNumber } from "./phone";
 import { collectPolicy } from "./collect";
+import { mobileFields, isActiveMobileField } from "./validate";
 
 interface InitData {
   initialPolicy: Record<string, Array<{ t: string; v: string }>>;
@@ -167,19 +168,12 @@ function clearPhoneError(input: HTMLInputElement, error: HTMLElement): void {
 // Returns the first invalid input (for focusing) or null when all are valid.
 function validateMobileInputs(): HTMLInputElement | null {
   let firstInvalid: HTMLInputElement | null = null;
-  const inputs = container.querySelectorAll<HTMLInputElement>(
-    `input[data-attr-type="${MOBILE_NUMBER_ATTR_TYPE}"]`
-  );
 
-  for (const input of inputs) {
-    const item = input.closest(".attr-item");
-    const checkbox = item?.querySelector<HTMLInputElement>(
-      'input[type="checkbox"]'
-    );
-    const error = item?.querySelector<HTMLElement>(".attr-error");
+  for (const field of mobileFields(container)) {
+    const { input, error } = field;
     if (!error) continue;
 
-    if (!checkbox?.checked || input.value.trim().length === 0) {
+    if (!isActiveMobileField(field)) {
       clearPhoneError(input, error);
       continue;
     }
