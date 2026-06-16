@@ -3,6 +3,7 @@ export {};
 
 import { EMAIL_ATTRIBUTE_TYPE as EMAIL_ATTR_TYPE } from "../../lib/utils";
 import { MOBILE_NUMBER_ATTR_TYPE, validateMobileNumber } from "./phone";
+import { collectPolicy } from "./collect";
 
 interface InitData {
   initialPolicy: Record<string, Array<{ t: string; v: string }>>;
@@ -191,41 +192,6 @@ function validateMobileInputs(): HTMLInputElement | null {
   return firstInvalid;
 }
 
-function collectPolicy(): Record<string, Array<{ t: string; v: string }>> {
-  const policy: Record<string, Array<{ t: string; v: string }>> = {};
-  const sections = container.querySelectorAll(".recipient-section");
-
-  for (const section of sections) {
-    const email = (section as HTMLElement).dataset.email!;
-    const attrs: Array<{ t: string; v: string }> = [];
-
-    const checkboxes = section.querySelectorAll<HTMLInputElement>(
-      'input[type="checkbox"]:checked'
-    );
-
-    for (const cb of checkboxes) {
-      const type = cb.dataset.attrType!;
-      const valueInput = section.querySelector<HTMLInputElement>(
-        `input[type="text"][data-attr-type="${type}"]`
-      );
-      let value = valueInput?.value?.trim() ?? "";
-      // Skip non-email attributes with empty values
-      if (!value && type !== EMAIL_ATTR_TYPE) continue;
-      // Persist the canonical E.164 form so the encrypted policy matches what
-      // Yivi discloses at decrypt time (cryptify#39).
-      if (type === MOBILE_NUMBER_ATTR_TYPE) {
-        const { e164 } = validateMobileNumber(value);
-        if (e164) value = e164;
-      }
-      attrs.push({ t: type, v: value });
-    }
-
-    policy[email] = attrs;
-  }
-
-  return policy;
-}
-
 btnSave.addEventListener("click", async () => {
   // Reject wrongly-formatted mobile numbers before they reach the policy.
   const firstInvalid = validateMobileInputs();
@@ -234,7 +200,7 @@ btnSave.addEventListener("click", async () => {
     return;
   }
 
-  const policy = collectPolicy();
+  const policy = collectPolicy(container);
   await browser.runtime.sendMessage({
     type: "policyEditorDone",
     policy,
