@@ -89,6 +89,9 @@
   "policyEditorCancel": {
     "message": "Cancel"
   },
+  "policyEditorInvalidPhone": {
+    "message": "Enter a valid mobile number, e.g. 0612345678 or +31612345678."
+  },
   "displayMessageTitleSign": {
     "message": "Sign the e-mail"
   },

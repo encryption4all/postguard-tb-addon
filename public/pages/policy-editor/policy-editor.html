@@ -85,6 +85,21 @@
       background: #f3f4f6;
       color: #6b7280;
     }
+    .attr-value input.invalid {
+      border-color: #e53e3e;
+    }
+    .attr-value input.invalid:focus-visible {
+      outline-color: #e53e3e;
+    }
+    .attr-error {
+      display: none;
+      color: #e53e3e;
+      font-size: 11px;
+      margin-top: 4px;
+    }
+    .attr-error:not(:empty) {
+      display: block;
+    }
     .footer {
       display: flex;
       justify-content: flex-end;

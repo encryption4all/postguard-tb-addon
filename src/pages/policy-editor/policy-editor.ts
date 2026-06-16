@@ -2,6 +2,7 @@
 export {};
 
 import { EMAIL_ATTRIBUTE_TYPE as EMAIL_ATTR_TYPE } from "../../lib/utils";
+import { MOBILE_NUMBER_ATTR_TYPE, validateMobileNumber } from "./phone";
 
 interface InitData {
   initialPolicy: Record<string, Array<{ t: string; v: string }>>;
@@ -83,7 +84,7 @@ function renderRecipients(
       const valueContainer = document.createElement("span");
       valueContainer.className = "attr-value";
       const valueInput = document.createElement("input");
-      valueInput.type = "text";
+      valueInput.type = attrType.type === MOBILE_NUMBER_ATTR_TYPE ? "tel" : "text";
       valueInput.placeholder = labelText;
       valueInput.value = isLockedEmail ? email : (existing?.v ?? "");
       valueInput.dataset.attrType = attrType.type;
@@ -91,10 +92,37 @@ function renderRecipients(
 
       valueContainer.appendChild(valueInput);
 
+      // Mobile numbers must be valid E.164 (Yivi stores them that way and a
+      // malformed value silently breaks decryption — cryptify#39). Show an
+      // inline error as the user types and on blur, mirroring the website.
+      if (attrType.type === MOBILE_NUMBER_ATTR_TYPE) {
+        const error = document.createElement("span");
+        error.className = "attr-error";
+        error.setAttribute("role", "alert");
+        valueContainer.appendChild(error);
+
+        const validate = () => {
+          // Only flag a non-empty value when the attribute is selected.
+          if (checkbox.checked && valueInput.value.trim().length > 0) {
+            return showPhoneValidity(valueInput, error);
+          }
+          clearPhoneError(valueInput, error);
+          return true;
+        };
+
+        valueInput.addEventListener("input", validate);
+        valueInput.addEventListener("blur", validate);
+      }
+
       checkbox.addEventListener("change", () => {
         item.classList.toggle("selected", checkbox.checked);
         if (checkbox.checked && !valueInput.value) {
           valueInput.focus();
+        }
+        // Clear any stale error when the attribute is unchecked.
+        if (!checkbox.checked && attrType.type === MOBILE_NUMBER_ATTR_TYPE) {
+          const error = valueContainer.querySelector<HTMLElement>(".attr-error");
+          if (error) clearPhoneError(valueInput, error);
         }
       });
 
@@ -107,6 +135,60 @@ function renderRecipients(
     section.appendChild(grid);
     container.appendChild(section);
   }
+}
+
+// Mark a mobile-number input as invalid and surface a clear inline message.
+// Returns whether the current value is valid.
+function showPhoneValidity(
+  input: HTMLInputElement,
+  error: HTMLElement
+): boolean {
+  const { valid } = validateMobileNumber(input.value);
+  if (valid) {
+    clearPhoneError(input, error);
+    return true;
+  }
+  input.classList.add("invalid");
+  input.setAttribute("aria-invalid", "true");
+  error.textContent =
+    browser.i18n.getMessage("policyEditorInvalidPhone") ||
+    "Enter a valid mobile number, e.g. 0612345678 or +31612345678.";
+  return false;
+}
+
+function clearPhoneError(input: HTMLInputElement, error: HTMLElement): void {
+  input.classList.remove("invalid");
+  input.removeAttribute("aria-invalid");
+  error.textContent = "";
+}
+
+// Validate every selected mobile-number field, surfacing inline errors.
+// Returns the first invalid input (for focusing) or null when all are valid.
+function validateMobileInputs(): HTMLInputElement | null {
+  let firstInvalid: HTMLInputElement | null = null;
+  const inputs = container.querySelectorAll<HTMLInputElement>(
+    `input[data-attr-type="${MOBILE_NUMBER_ATTR_TYPE}"]`
+  );
+
+  for (const input of inputs) {
+    const item = input.closest(".attr-item");
+    const checkbox = item?.querySelector<HTMLInputElement>(
+      'input[type="checkbox"]'
+    );
+    const error = item?.querySelector<HTMLElement>(".attr-error");
+    if (!error) continue;
+
+    if (!checkbox?.checked || input.value.trim().length === 0) {
+      clearPhoneError(input, error);
+      continue;
+    }
+
+    if (!showPhoneValidity(input, error) && !firstInvalid) {
+      firstInvalid = input;
+    }
+  }
+
+  return firstInvalid;
 }
 
 function collectPolicy(): Record<string, Array<{ t: string; v: string }>> {
@@ -126,9 +208,15 @@ function collectPolicy(): Record<string, Array<{ t: string; v: string }>> {
       const valueInput = section.querySelector<HTMLInputElement>(
         `input[type="text"][data-attr-type="${type}"]`
       );
-      const value = valueInput?.value?.trim() ?? "";
+      let value = valueInput?.value?.trim() ?? "";
       // Skip non-email attributes with empty values
       if (!value && type !== EMAIL_ATTR_TYPE) continue;
+      // Persist the canonical E.164 form so the encrypted policy matches what
+      // Yivi discloses at decrypt time (cryptify#39).
+      if (type === MOBILE_NUMBER_ATTR_TYPE) {
+        const { e164 } = validateMobileNumber(value);
+        if (e164) value = e164;
+      }
       attrs.push({ t: type, v: value });
     }
 
@@ -139,6 +227,13 @@ function collectPolicy(): Record<string, Array<{ t: string; v: string }>> {
 }
 
 btnSave.addEventListener("click", async () => {
+  // Reject wrongly-formatted mobile numbers before they reach the policy.
+  const firstInvalid = validateMobileInputs();
+  if (firstInvalid) {
+    firstInvalid.focus();
+    return;
+  }
+
   const policy = collectPolicy();
   await browser.runtime.sendMessage({
     type: "policyEditorDone",

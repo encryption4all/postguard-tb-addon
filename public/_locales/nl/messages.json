@@ -89,6 +89,9 @@
   "policyEditorCancel": {
     "message": "Annuleren"
   },
+  "policyEditorInvalidPhone": {
+    "message": "Voer een geldig telefoonnummer in, bijv. 0612345678 of +31612345678."
+  },
   "displayMessageTitleSign": {
     "message": "Onderteken de email"
   },
