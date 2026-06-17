@@ -84,8 +84,16 @@
       text-align: center;
     }
     .btn:hover { background: #f3f4f6; }
-    .btn:disabled { color: #6b7280; opacity: 1; cursor: default; }
-    .btn:disabled:hover { background: #fff; }
+    .btn:disabled,
+    .btn[aria-disabled="true"] { color: #6b7280; opacity: 1; cursor: default; }
+    .btn:disabled:hover,
+    .btn[aria-disabled="true"]:hover { background: #fff; }
+    .hint {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: -2px;
+    }
+    .hint[hidden] { display: none; }
     .btn:focus-visible,
     .toggle-switch:focus-within .slider {
       outline: 2px solid #006EF4;
@@ -121,8 +129,9 @@
   <div class="status" id="status-text" role="status" aria-live="polite"></div>
 
   <div class="actions">
-    <button class="btn" id="btn-manage" disabled>Manage Access</button>
-    <button class="btn" id="btn-sign" disabled>Sign</button>
+    <button class="btn" id="btn-manage" aria-disabled="true">Manage Access</button>
+    <p class="hint" id="manage-hint" role="status" aria-live="polite" hidden></p>
+    <button class="btn" id="btn-sign" aria-disabled="true">Sign</button>
   </div>
 
   <script src="compose-action.js"></script>

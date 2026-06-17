@@ -1,45 +1,50 @@
 /// <reference path="../../types/thunderbird.d.ts" />
+import {
+  applyComposeActionUi,
+  isDisabled,
+  type ComposeActionElements,
+  type ComposeUiState,
+} from "./manage-access";
 export {};
 
 const toggle = document.getElementById("toggle-encrypt") as HTMLInputElement;
-const statusText = document.getElementById("status-text") as HTMLElement;
-const btnManage = document.getElementById("btn-manage") as HTMLButtonElement;
-const btnSign = document.getElementById("btn-sign") as HTMLButtonElement;
+const els: ComposeActionElements = {
+  statusText: document.getElementById("status-text") as HTMLElement,
+  btnManage: document.getElementById("btn-manage") as HTMLButtonElement,
+  btnSign: document.getElementById("btn-sign") as HTMLButtonElement,
+  manageHint: document.getElementById("manage-hint") as HTMLElement,
+};
+
+const t = (key: string) => browser.i18n.getMessage(key);
 
 async function init() {
   const state = (await browser.runtime.sendMessage({
     type: "getComposeState",
-  })) as { encrypt: boolean; hasRecipients: boolean } | undefined;
+  })) as ComposeUiState | undefined;
 
   if (state) {
     toggle.checked = state.encrypt;
-    updateUI(state.encrypt, state.hasRecipients);
+    applyComposeActionUi(els, state, t);
   }
-}
-
-function updateUI(enabled: boolean, hasRecipients = true) {
-  statusText.textContent = enabled
-    ? browser.i18n.getMessage("encryptionEnabled")
-    : browser.i18n.getMessage("encryptionDisabled");
-  btnManage.disabled = !enabled || !hasRecipients;
-  btnSign.disabled = !enabled;
 }
 
 toggle.addEventListener("change", async () => {
   const result = (await browser.runtime.sendMessage({
     type: "toggleEncryption",
-  })) as { encrypt: boolean; hasRecipients: boolean } | undefined;
+  })) as ComposeUiState | undefined;
   if (result) {
-    updateUI(result.encrypt, result.hasRecipients);
+    applyComposeActionUi(els, result, t);
   }
 });
 
-btnManage.addEventListener("click", async () => {
+els.btnManage.addEventListener("click", async () => {
+  if (isDisabled(els.btnManage)) return;
   await browser.runtime.sendMessage({ type: "openPolicyEditor" });
   window.close();
 });
 
-btnSign.addEventListener("click", async () => {
+els.btnSign.addEventListener("click", async () => {
+  if (isDisabled(els.btnSign)) return;
   await browser.runtime.sendMessage({ type: "openSignEditor" });
   window.close();
 });

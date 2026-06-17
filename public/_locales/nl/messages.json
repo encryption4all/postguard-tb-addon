@@ -35,6 +35,9 @@
   "manageAccess": {
     "message": "Toegang beheren"
   },
+  "manageAccessNoRecipients": {
+    "message": "Voeg eerst een ontvanger toe voordat je toegang kunt beheren."
+  },
   "sign": {
     "message": "Ondertekenen"
   },

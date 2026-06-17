@@ -35,6 +35,9 @@
   "manageAccess": {
     "message": "Manage Access"
   },
+  "manageAccessNoRecipients": {
+    "message": "Add at least one recipient before you can manage access."
+  },
   "sign": {
     "message": "Sign"
   },
