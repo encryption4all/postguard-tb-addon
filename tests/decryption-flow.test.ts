@@ -153,6 +153,28 @@ describe("handleDecryptMessage — post-decryption", () => {
     ]);
   });
 
+  // Regression for #48: the decrypted-message banner must show *all*
+  // signed sender attributes, not just the email. pg-js >= 2.0.0 returns
+  // the post-unseal verified identity, so `FriendlySender.attributes`
+  // carries the public email con *and* the private name/organization con
+  // (flattened by pg-js's `parseSender`). Every one of them must become a
+  // badge. (pg-js 1.x reused the pre-unseal identity and dropped the
+  // private attributes, so only the email badge ever showed.)
+  it("should build a badge for every signed attribute, not just the email", () => {
+    const badges = badgesFromSender({
+      attributes: [
+        { value: "alice@example.com" },
+        { value: "Alice Anderson" },
+        { value: "ACME Corp" },
+      ],
+    });
+    expect(badges).toEqual([
+      { value: "alice@example.com" },
+      { value: "Alice Anderson" },
+      { value: "ACME Corp" },
+    ]);
+  });
+
   it("should treat undisclosed sender attributes as empty-string badges", () => {
     const badges = badgesFromSender({
       attributes: [{ value: null }, { value: undefined }],

@@ -433,6 +433,52 @@ describe("crypto popup — decrypt", () => {
     expect(Array.from(fromBase64(done.result.plaintextBase64))).toEqual([1, 2, 3]);
   });
 
+  // Regression for #48: the popup must forward the *entire* sender
+  // identity (every signed attribute) to the background untouched — the
+  // banner can only show what it receives here. pg-js >= 2.0.0 surfaces
+  // the post-unseal verified identity, so `sender.attributes` carries the
+  // public email plus any private name/organization attributes. Guard
+  // against the popup truncating that down to the email.
+  it("should forward all sender attributes (email + name + org) untouched", async () => {
+    const sender = {
+      email: "alice@example.com",
+      attributes: [
+        { type: "pbdf.sidn-pbdf.email.email", value: "alice@example.com" },
+        { type: "pbdf.gemeente.personalData.fullname", value: "Alice Anderson" },
+        { type: "pbdf.pbdf.surfnet-2.institute", value: "ACME Corp" },
+      ],
+      raw: {
+        public: { con: [{ t: "pbdf.sidn-pbdf.email.email", v: "alice@example.com" }] },
+        private: {
+          con: [
+            { t: "pbdf.gemeente.personalData.fullname", v: "Alice Anderson" },
+            { t: "pbdf.pbdf.surfnet-2.institute", v: "ACME Corp" },
+          ],
+        },
+      },
+    };
+    const pg: any = {
+      open: vi.fn(() => ({
+        decrypt: vi.fn(async () => ({
+          plaintext: new Uint8Array([1, 2, 3]),
+          sender,
+        })),
+      })),
+    };
+    const runtime = makeRuntime();
+    const data: any = {
+      operation: "decrypt",
+      ciphertextBase64: toBase64(new Uint8Array([9])),
+      recipientEmail: "alice@example.com",
+    };
+    await runDecryptInPopup(pg, data, 1, { runtime });
+    const done = runtime.sendMessage.mock.calls
+      .map((c) => c[0] as any)
+      .find((m) => m.type === "cryptoPopupDone");
+    expect(done.result.sender).toEqual(sender);
+    expect(done.result.sender.attributes).toHaveLength(3);
+  });
+
   it("should auto-close popup after successful decryption", async () => {
     const ui = makeUi();
     const data = fakeData("decrypt");
