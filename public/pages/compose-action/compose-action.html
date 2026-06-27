@@ -85,7 +85,8 @@
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.03em;
-      color: #006EF4;
+      /* Darkened from brand #006EF4 to clear WCAG AA (4.5:1) on the #f3f7fb panel. */
+      color: #0063DC;
     }
     .panel-row {
       display: flex;
@@ -114,7 +115,8 @@
     }
     .panel-empty {
       font-size: 12px;
-      color: #6b7280;
+      /* Slightly darker than the popup's #6b7280 muted grey to clear WCAG AA on the tinted panel. */
+      color: #646b78;
     }
     .panel-warning {
       font-size: 12px;
