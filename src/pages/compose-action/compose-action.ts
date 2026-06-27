@@ -5,9 +5,19 @@ import {
   type ComposeActionElements,
   type ComposeUiState,
 } from "./manage-access";
+import {
+  buildComposeStatusSummary,
+  renderComposeStatusPanel,
+  type ComposeStatusInput,
+} from "./status-summary";
 export {};
 
+// The background `getComposeState` handler returns the manage-access flags
+// plus everything the status panel needs (recipients, policy, signId, …).
+type ComposeState = ComposeUiState & ComposeStatusInput;
+
 const toggle = document.getElementById("toggle-encrypt") as HTMLInputElement;
+const statusPanel = document.getElementById("status-panel") as HTMLElement;
 const els: ComposeActionElements = {
   statusText: document.getElementById("status-text") as HTMLElement,
   btnManage: document.getElementById("btn-manage") as HTMLButtonElement,
@@ -17,24 +27,24 @@ const els: ComposeActionElements = {
 
 const t = (key: string) => browser.i18n.getMessage(key);
 
-async function init() {
+function applyState(state: ComposeState) {
+  toggle.checked = state.encrypt;
+  applyComposeActionUi(els, state, t);
+  renderComposeStatusPanel(statusPanel, buildComposeStatusSummary(state, t), t);
+}
+
+// Pull the full compose state and repaint the popup. Used on open and after
+// every toggle so the status panel always reflects the live recipients/policy.
+async function refresh() {
   const state = (await browser.runtime.sendMessage({
     type: "getComposeState",
-  })) as ComposeUiState | undefined;
-
-  if (state) {
-    toggle.checked = state.encrypt;
-    applyComposeActionUi(els, state, t);
-  }
+  })) as ComposeState | undefined;
+  if (state) applyState(state);
 }
 
 toggle.addEventListener("change", async () => {
-  const result = (await browser.runtime.sendMessage({
-    type: "toggleEncryption",
-  })) as ComposeUiState | undefined;
-  if (result) {
-    applyComposeActionUi(els, result, t);
-  }
+  await browser.runtime.sendMessage({ type: "toggleEncryption" });
+  await refresh();
 });
 
 els.btnManage.addEventListener("click", async () => {
@@ -49,4 +59,4 @@ els.btnSign.addEventListener("click", async () => {
   window.close();
 });
 
-init();
+refresh();

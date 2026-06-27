@@ -110,6 +110,12 @@
   "notificationComposeBadgesLabel": {
     "message": "Ontvangers zien jou als"
   },
+  "composeStatusRecipientsLabel": {
+    "message": "Versleuteld voor"
+  },
+  "composeStatusNoRecipients": {
+    "message": "Voeg een ontvanger toe om te zien voor wie deze e-mail wordt versleuteld."
+  },
   "encryptionError": {
     "message": "Versleuteling mislukt. Probeer het opnieuw."
   },

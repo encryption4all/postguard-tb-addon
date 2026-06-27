@@ -110,6 +110,12 @@
   "notificationComposeBadgesLabel": {
     "message": "Recipients will know you as"
   },
+  "composeStatusRecipientsLabel": {
+    "message": "Encrypted for"
+  },
+  "composeStatusNoRecipients": {
+    "message": "Add a recipient to see who this email will be encrypted for."
+  },
   "encryptionError": {
     "message": "Encryption failed. Please try again."
   },

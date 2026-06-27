@@ -433,11 +433,25 @@ async function handleToggleEncryption(tabId: number | undefined) {
 }
 
 async function handleGetComposeState(tabId: number | undefined) {
-  if (tabId == null) return { encrypt: false, hasRecipients: false };
+  if (tabId == null) {
+    return { encrypt: false, hasRecipients: false, recipients: [], from: "", hasBcc: false };
+  }
   const state = composeTabs.get(tabId);
   const details = await browser.compose.getComposeDetails(tabId);
-  const hasRecipients = [...(details.to ?? []), ...(details.cc ?? [])].length > 0;
-  return { encrypt: state?.encrypt ?? false, policy: state?.policy, hasRecipients };
+  // Normalize to address-only, lowercased form so the keys line up with the
+  // policy/signId maps (both keyed via `toEmail`) for the status panel.
+  const recipients = [...(details.to ?? []), ...(details.cc ?? [])].map(toEmail);
+  const hasRecipients = recipients.length > 0;
+  const hasBcc = (details.bcc ?? []).length > 0;
+  return {
+    encrypt: state?.encrypt ?? false,
+    policy: state?.policy,
+    signId: state?.signId,
+    recipients,
+    from: toEmail(details.from),
+    hasRecipients,
+    hasBcc,
+  };
 }
 
 // --- Policy editor flow ---
