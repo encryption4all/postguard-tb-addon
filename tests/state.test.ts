@@ -9,8 +9,11 @@ import {
   toggleEncrypt,
   cleanupComposeTab,
   cleanupDecryptedMessage,
+  getSignPrefill,
+  setSignPrefill,
 } from "../src/background/state";
 import type { Policy } from "../src/lib/types";
+import { EMAIL_ATTRIBUTE_TYPE } from "../src/lib/utils";
 import { installBrowserMock, type BrowserMock } from "./helpers/browser-mock";
 
 let mock: BrowserMock;
@@ -269,5 +272,88 @@ describe("encryption state persistence (PR #68)", () => {
 
     await restoreEncryptState();
     expect(composeTabs.get(5)?.encrypt).toBe(true);
+  });
+});
+
+// Per-account sign-attribute prefills (issue #77). A user fills in their sign
+// attributes once; the next compose for that account pre-fills them. Storage is
+// keyed by the account's from-address so different accounts stay separate.
+describe("per-account sign prefills (issue #77)", () => {
+  const SURNAME = "pbdf.gemeente.personalData.surname";
+  const DOB = "pbdf.gemeente.personalData.dateofbirth";
+
+  it("returns an empty list when nothing is stored for the account", async () => {
+    expect(await getSignPrefill("alice@example.com")).toEqual([]);
+  });
+
+  it("round-trips saved attributes for an account", async () => {
+    await setSignPrefill("alice@example.com", [{ t: SURNAME, v: "Smith" }]);
+    expect(await getSignPrefill("alice@example.com")).toEqual([
+      { t: SURNAME, v: "Smith" },
+    ]);
+  });
+
+  it("keeps different accounts' attributes separate", async () => {
+    await setSignPrefill("alice@example.com", [{ t: SURNAME, v: "Smith" }]);
+    await setSignPrefill("bob@example.com", [{ t: DOB, v: "01-01-1990" }]);
+
+    expect(await getSignPrefill("alice@example.com")).toEqual([
+      { t: SURNAME, v: "Smith" },
+    ]);
+    expect(await getSignPrefill("bob@example.com")).toEqual([
+      { t: DOB, v: "01-01-1990" },
+    ]);
+  });
+
+  it("matches the account key case-insensitively", async () => {
+    await setSignPrefill("Alice@Example.com", [{ t: SURNAME, v: "Smith" }]);
+    expect(await getSignPrefill("alice@example.com")).toEqual([
+      { t: SURNAME, v: "Smith" },
+    ]);
+  });
+
+  it("drops the locked email attribute and blank values before storing", async () => {
+    await setSignPrefill("alice@example.com", [
+      { t: EMAIL_ATTRIBUTE_TYPE, v: "alice@example.com" },
+      { t: SURNAME, v: "Smith" },
+      { t: DOB, v: "   " },
+    ]);
+    expect(await getSignPrefill("alice@example.com")).toEqual([
+      { t: SURNAME, v: "Smith" },
+    ]);
+  });
+
+  it("overwrites the previously stored attributes for the account", async () => {
+    await setSignPrefill("alice@example.com", [{ t: SURNAME, v: "Smith" }]);
+    await setSignPrefill("alice@example.com", [{ t: DOB, v: "01-01-1990" }]);
+    expect(await getSignPrefill("alice@example.com")).toEqual([
+      { t: DOB, v: "01-01-1990" },
+    ]);
+  });
+
+  it("clears a stored prefill when an empty/effectively-empty set is saved", async () => {
+    await setSignPrefill("alice@example.com", [{ t: SURNAME, v: "Smith" }]);
+    await setSignPrefill("alice@example.com", [
+      { t: EMAIL_ATTRIBUTE_TYPE, v: "alice@example.com" },
+    ]);
+    expect(await getSignPrefill("alice@example.com")).toEqual([]);
+
+    // The account's entry is removed from the blob; others are untouched.
+    await setSignPrefill("bob@example.com", [{ t: DOB, v: "01-01-1990" }]);
+    await setSignPrefill("bob@example.com", []);
+    const saved = mock.storage.local["signPrefills"] as Record<string, unknown>;
+    expect(saved).toEqual({});
+  });
+
+  it("persists under the dedicated storage key without touching encrypt state", async () => {
+    composeTabs.set(1, { encrypt: true });
+    await persistEncryptState();
+    await setSignPrefill("alice@example.com", [{ t: SURNAME, v: "Smith" }]);
+
+    expect(mock.storage.local["signPrefills"]).toEqual({
+      "alice@example.com": [{ t: SURNAME, v: "Smith" }],
+    });
+    // The encrypt-state blob is independent.
+    expect(mock.storage.local["composeTabEncryptState"]).toBeDefined();
   });
 });

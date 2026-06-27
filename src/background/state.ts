@@ -1,4 +1,5 @@
 import type { Policy, AttributeCon, Badge, CryptoPopupInitData, CryptoPopupResult } from "../lib/types";
+import { EMAIL_ATTRIBUTE_TYPE } from "../lib/utils";
 
 export type { Policy, AttributeCon };
 
@@ -205,4 +206,61 @@ export function recordInFlightUpload(tabId: number, uuid: string, recoveryToken:
 
 export function clearInFlightUpload(tabId: number): void {
   inFlightUploads.delete(tabId);
+}
+
+// --- Per-account sign-attribute prefills (issue #77) ---
+// The attributes a user discloses when signing rarely change between emails,
+// yet the old flow asked for them on every compose. We persist the last-saved
+// sign attributes keyed by the sender's account so the next compose for that
+// account pre-fills them; the user can still edit them in the policy editor.
+//
+// The account key is the sender's from-address (lowercased). Each Thunderbird
+// identity has its own from-address, so this keeps different accounts'
+// attributes separate — exactly the per-account scoping the issue asks for.
+
+const SIGN_PREFILLS_KEY = "signPrefills";
+
+// account email -> the attributes saved for that account
+type SignPrefills = Record<string, AttributeCon>;
+
+function accountKey(account: string): string {
+  return account.trim().toLowerCase();
+}
+
+/** Read the saved sign attributes for an account, or [] if none are stored. */
+export async function getSignPrefill(account: string): Promise<AttributeCon> {
+  try {
+    const data = await browser.storage.local.get(SIGN_PREFILLS_KEY);
+    const saved = data[SIGN_PREFILLS_KEY] as SignPrefills | undefined;
+    return saved?.[accountKey(account)] ?? [];
+  } catch (e) {
+    console.warn("[PostGuard] Failed to read sign prefills:", e);
+    return [];
+  }
+}
+
+/**
+ * Persist the sign attributes the user just saved for an account so the next
+ * compose pre-fills them. The locked email attribute (always the sender's own
+ * address) and any blank-valued attributes are dropped — a blank value must
+ * not become a mandatory empty-string disclosure next time. Saving an empty
+ * set clears any previously stored prefill for the account.
+ */
+export async function setSignPrefill(account: string, attrs: AttributeCon): Promise<void> {
+  try {
+    const key = accountKey(account);
+    const cleaned = attrs.filter(
+      (a) => a.t !== EMAIL_ATTRIBUTE_TYPE && a.v.trim() !== "",
+    );
+    const data = await browser.storage.local.get(SIGN_PREFILLS_KEY);
+    const saved = (data[SIGN_PREFILLS_KEY] as SignPrefills | undefined) ?? {};
+    if (cleaned.length === 0) {
+      delete saved[key];
+    } else {
+      saved[key] = cleaned;
+    }
+    await browser.storage.local.set({ [SIGN_PREFILLS_KEY]: saved });
+  } catch (e) {
+    console.warn("[PostGuard] Failed to persist sign prefills:", e);
+  }
 }

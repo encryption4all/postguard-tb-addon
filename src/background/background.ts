@@ -16,6 +16,8 @@ import {
   clearInFlightUpload,
   persistInFlightUploads,
   loadInFlightUploads,
+  getSignPrefill,
+  setSignPrefill,
 } from "./state";
 import { PKG_URL, CRYPTIFY_URL, POSTGUARD_WEBSITE_URL } from "../lib/pkg-client";
 import { toBase64, fromBase64 } from "../lib/encoding";
@@ -477,6 +479,14 @@ async function handleOpenPolicyEditor(
         initialPolicy[rec] = con;
       }
     }
+  } else if (sign) {
+    // First sign for this compose tab: pre-fill from the per-account store so
+    // the user doesn't re-enter the same attributes on every email (issue #77).
+    const account = toEmail(details.from);
+    const prefill = await getSignPrefill(account);
+    if (prefill.length > 0 && account in initialPolicy) {
+      initialPolicy[account] = prefill;
+    }
   }
 
   const popup = await browser.windows.create({
@@ -519,6 +529,10 @@ async function handleOpenPolicyEditor(
     const newPolicy = await policyPromise;
     if (sign) {
       state.signId = newPolicy;
+      // Persist the saved attributes so the next compose for this account
+      // pre-fills them (issue #77).
+      const account = toEmail(details.from);
+      await setSignPrefill(account, newPolicy[account] ?? []);
     } else {
       state.policy = newPolicy;
     }
