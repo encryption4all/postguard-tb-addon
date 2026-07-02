@@ -92,12 +92,15 @@ export async function initCryptoPopup(deps: InitCryptoPopupDeps): Promise<void> 
     }, deps.autoCloseDelayMs ?? DEFAULT_AUTO_CLOSE_MS);
   } catch (e) {
     console.error("[PostGuard] Crypto popup error:", e);
+    // Raw SDK error text can contain internal server URLs or subsystem
+    // names, so it is only ever logged above (via console.error) — it is
+    // never surfaced in the popup UI or forwarded to the background.
+    // Only explicitly safe error types map to a specific (localized)
+    // message; everything else falls back to a generic notice.
     const message =
       e instanceof UploadSessionExpiredError
         ? deps.i18n.getMessage("uploadSessionExpired")
-        : e instanceof Error
-        ? e.message
-        : "Operation failed.";
+        : deps.i18n.getMessage("operationFailed");
     await deps.sendError(windowId, message).catch(() => undefined);
     deps.ui.showError(message);
   }

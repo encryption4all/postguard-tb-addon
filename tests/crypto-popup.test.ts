@@ -3,6 +3,7 @@ import { buildRecipients } from "../src/pages/yivi-popup/recipients";
 import { runEncryptInPopup, YIVI_ELEMENT_SELECTOR } from "../src/pages/yivi-popup/encrypt-popup";
 import { runDecryptInPopup } from "../src/pages/yivi-popup/decrypt-popup";
 import { initCryptoPopup } from "../src/pages/yivi-popup/init-flow";
+import { UploadSessionExpiredError } from "@e4a/pg-js";
 import { toBase64, fromBase64 } from "../src/lib/encoding";
 import type {
   SerializedRecipient,
@@ -547,7 +548,8 @@ describe("crypto popup — error handling", () => {
       requestInitData: async () => data,
       createPg: () => ({} as any),
       runEncrypt: async () => {
-        throw new Error("encrypt boom");
+        // Raw SDK text (could embed internal URLs/subsystem names).
+        throw new Error("encrypt boom https://pkg.internal:8443/v2/parameters");
       },
       runDecrypt: async () => undefined,
       sendError,
@@ -556,7 +558,9 @@ describe("crypto popup — error handling", () => {
       i18n: { getMessage: (k) => k },
       scheduleAutoClose: () => undefined,
     });
-    expect(sendError).toHaveBeenCalledWith(8, "encrypt boom");
+    // The raw message is sanitized to the generic fallback key, never
+    // the SDK text.
+    expect(sendError).toHaveBeenCalledWith(8, "operationFailed");
   });
 
   it("should send error message to background on decrypt failure", async () => {
@@ -569,7 +573,7 @@ describe("crypto popup — error handling", () => {
       createPg: () => ({} as any),
       runEncrypt: async () => undefined,
       runDecrypt: async () => {
-        throw new Error("decrypt boom");
+        throw new Error("decrypt boom internal-keyserver-down");
       },
       sendError,
       closeWindow: async () => undefined,
@@ -577,7 +581,7 @@ describe("crypto popup — error handling", () => {
       i18n: { getMessage: (k) => k },
       scheduleAutoClose: () => undefined,
     });
-    expect(sendError).toHaveBeenCalledWith(9, "decrypt boom");
+    expect(sendError).toHaveBeenCalledWith(9, "operationFailed");
   });
 
   it("should display error in popup UI", async () => {
@@ -597,7 +601,7 @@ describe("crypto popup — error handling", () => {
       i18n: { getMessage: (k) => k },
       scheduleAutoClose: () => undefined,
     });
-    expect(ui.error).toBe("UI boom");
+    expect(ui.error).toBe("operationFailed");
   });
 
   it("should not auto-close on error", async () => {
@@ -619,5 +623,58 @@ describe("crypto popup — error handling", () => {
       scheduleAutoClose: (fn) => scheduled.push(fn),
     });
     expect(scheduled).toEqual([]);
+  });
+
+  // Regression for #143: raw SDK error text (which can embed internal
+  // server URLs or subsystem names) must never reach the UI or the
+  // background — only the generic localized fallback should.
+  it("should never leak raw SDK error text to UI or background", async () => {
+    const ui = makeUi();
+    const data = fakeData("encrypt");
+    const sendError = vi.fn(async () => undefined);
+    const leaky = "boom at https://pkg.internal:8443/v2/parameters (keyserver)";
+    await initCryptoPopup({
+      resolveWindowId: async () => 1,
+      requestInitData: async () => data,
+      createPg: () => ({} as any),
+      runEncrypt: async () => {
+        throw new Error(leaky);
+      },
+      runDecrypt: async () => undefined,
+      sendError,
+      closeWindow: async () => undefined,
+      ui,
+      i18n: { getMessage: (k) => k },
+      scheduleAutoClose: () => undefined,
+    });
+    expect(ui.error).toBe("operationFailed");
+    expect(sendError).toHaveBeenCalledWith(1, "operationFailed");
+    expect(ui.error).not.toContain("pkg.internal");
+    expect(sendError.mock.calls[0][1]).not.toContain("pkg.internal");
+  });
+
+  // UploadSessionExpiredError is an explicitly safe type: its dedicated
+  // localized message is user-facing and carries no internal detail, so
+  // it is allowed through (mapped to its own i18n key).
+  it("should map UploadSessionExpiredError to its safe localized key", async () => {
+    const ui = makeUi();
+    const data = fakeData("encrypt");
+    const sendError = vi.fn(async () => undefined);
+    await initCryptoPopup({
+      resolveWindowId: async () => 4,
+      requestInitData: async () => data,
+      createPg: () => ({} as any),
+      runEncrypt: async () => {
+        throw new UploadSessionExpiredError("session gone");
+      },
+      runDecrypt: async () => undefined,
+      sendError,
+      closeWindow: async () => undefined,
+      ui,
+      i18n: { getMessage: (k) => k },
+      scheduleAutoClose: () => undefined,
+    });
+    expect(ui.error).toBe("uploadSessionExpired");
+    expect(sendError).toHaveBeenCalledWith(4, "uploadSessionExpired");
   });
 });
