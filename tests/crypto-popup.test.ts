@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { UploadSessionExpiredError } from "@e4a/pg-js";
 import { buildRecipients } from "../src/pages/yivi-popup/recipients";
 import { runEncryptInPopup, YIVI_ELEMENT_SELECTOR } from "../src/pages/yivi-popup/encrypt-popup";
 import { runDecryptInPopup } from "../src/pages/yivi-popup/decrypt-popup";
@@ -556,7 +557,9 @@ describe("crypto popup — error handling", () => {
       i18n: { getMessage: (k) => k },
       scheduleAutoClose: () => undefined,
     });
-    expect(sendError).toHaveBeenCalledWith(8, "encrypt boom");
+    // Raw SDK error text ("encrypt boom") must NOT leak — the generic
+    // i18n fallback is sent to the background instead.
+    expect(sendError).toHaveBeenCalledWith(8, "operationFailed");
   });
 
   it("should send error message to background on decrypt failure", async () => {
@@ -577,7 +580,9 @@ describe("crypto popup — error handling", () => {
       i18n: { getMessage: (k) => k },
       scheduleAutoClose: () => undefined,
     });
-    expect(sendError).toHaveBeenCalledWith(9, "decrypt boom");
+    // Raw SDK error text ("decrypt boom") must NOT leak — the generic
+    // i18n fallback is sent to the background instead.
+    expect(sendError).toHaveBeenCalledWith(9, "operationFailed");
   });
 
   it("should display error in popup UI", async () => {
@@ -597,7 +602,58 @@ describe("crypto popup — error handling", () => {
       i18n: { getMessage: (k) => k },
       scheduleAutoClose: () => undefined,
     });
-    expect(ui.error).toBe("UI boom");
+    // Raw SDK error text ("UI boom") must NOT be shown — the popup UI
+    // displays the generic i18n fallback instead.
+    expect(ui.error).toBe("operationFailed");
+  });
+
+  it("should surface the i18n message for the safe UploadSessionExpiredError type", async () => {
+    const ui = makeUi();
+    const data = fakeData("encrypt");
+    const sendError = vi.fn(async () => undefined);
+    await initCryptoPopup({
+      resolveWindowId: async () => 7,
+      requestInitData: async () => data,
+      createPg: () => ({} as any),
+      runEncrypt: async () => {
+        throw new UploadSessionExpiredError();
+      },
+      runDecrypt: async () => undefined,
+      sendError,
+      closeWindow: async () => undefined,
+      ui,
+      i18n: { getMessage: (k) => k },
+      scheduleAutoClose: () => undefined,
+    });
+    expect(sendError).toHaveBeenCalledWith(7, "uploadSessionExpired");
+    expect(ui.error).toBe("uploadSessionExpired");
+  });
+
+  it("should not leak sensitive SDK error text to the UI or background", async () => {
+    const ui = makeUi();
+    const data = fakeData("encrypt");
+    const sendError = vi.fn(async () => undefined);
+    const secret = "connect ECONNREFUSED https://internal-pkg.corp:8443/v2/request";
+    await initCryptoPopup({
+      resolveWindowId: async () => 3,
+      requestInitData: async () => data,
+      createPg: () => ({} as any),
+      runEncrypt: async () => {
+        throw new Error(secret);
+      },
+      runDecrypt: async () => undefined,
+      sendError,
+      closeWindow: async () => undefined,
+      ui,
+      i18n: { getMessage: (k) => k },
+      scheduleAutoClose: () => undefined,
+    });
+    expect(sendError).toHaveBeenCalledWith(3, "operationFailed");
+    expect(ui.error).toBe("operationFailed");
+    // The internal server URL / subsystem detail must never reach the UI
+    // or the background channel.
+    expect(sendError).not.toHaveBeenCalledWith(3, secret);
+    expect(ui.error).not.toContain("internal-pkg.corp");
   });
 
   it("should not auto-close on error", async () => {

@@ -134,6 +134,9 @@
   "uploadSessionExpired": {
     "message": "The encrypted upload session expired before it could finish. Please send the message again."
   },
+  "operationFailed": {
+    "message": "The operation could not be completed. Please try again."
+  },
   "decryptingButton": {
     "message": "Decrypting..."
   }

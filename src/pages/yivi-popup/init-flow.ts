@@ -92,12 +92,16 @@ export async function initCryptoPopup(deps: InitCryptoPopupDeps): Promise<void> 
     }, deps.autoCloseDelayMs ?? DEFAULT_AUTO_CLOSE_MS);
   } catch (e) {
     console.error("[PostGuard] Crypto popup error:", e);
+    // Only surface messages from error types we know are safe to show.
+    // Raw SDK error text can embed internal server URLs or subsystem
+    // names, so it is logged above (console.error) but never forwarded
+    // to the popup UI or sent to the background — the user sees a
+    // generic fallback instead. Add new cases here only for error types
+    // whose `.message` is verified safe for display.
     const message =
       e instanceof UploadSessionExpiredError
         ? deps.i18n.getMessage("uploadSessionExpired")
-        : e instanceof Error
-        ? e.message
-        : "Operation failed.";
+        : deps.i18n.getMessage("operationFailed");
     await deps.sendError(windowId, message).catch(() => undefined);
     deps.ui.showError(message);
   }
