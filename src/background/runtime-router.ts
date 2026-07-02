@@ -77,43 +77,40 @@ export function dispatchRuntimeMessage(
       );
     }
 
-    case "cryptoPopupInit": {
-      const windowId =
-        (msg.windowId as number | undefined) ?? sender.tab?.windowId;
-      return Promise.resolve(handlers.handleCryptoPopupInit(windowId));
-    }
+    case "cryptoPopupInit":
+      return Promise.resolve(
+        handlers.handleCryptoPopupInit(sender.tab?.windowId),
+      );
 
     case "cryptoPopupDone": {
       const result = msg.result;
       if (!result || typeof result !== "object") return false;
       const op = (result as Record<string, unknown>).operation;
       if (op !== "encrypt" && op !== "decrypt") return false;
-      const windowId =
-        (msg.windowId as number | undefined) ?? sender.tab?.windowId;
       return Promise.resolve(
-        handlers.handleCryptoPopupDone(windowId, result as CryptoPopupResult),
+        handlers.handleCryptoPopupDone(
+          sender.tab?.windowId,
+          result as CryptoPopupResult,
+        ),
       );
     }
 
-    case "cryptoPopupError": {
-      const windowId =
-        (msg.windowId as number | undefined) ?? sender.tab?.windowId;
+    case "cryptoPopupError":
       return Promise.resolve(
-        handlers.handleCryptoPopupError(windowId, msg.error as string),
+        handlers.handleCryptoPopupError(
+          sender.tab?.windowId,
+          msg.error as string,
+        ),
       );
-    }
 
-    case "cryptoPopupUploadInit": {
-      const windowId =
-        (msg.windowId as number | undefined) ?? sender.tab?.windowId;
+    case "cryptoPopupUploadInit":
       return Promise.resolve(
         handlers.handleCryptoPopupUploadInit(
-          windowId,
+          sender.tab?.windowId,
           msg.uuid as string,
           msg.recoveryToken as string,
         ),
       );
-    }
 
     case "decryptMessage": {
       const messageId = msg.messageId;

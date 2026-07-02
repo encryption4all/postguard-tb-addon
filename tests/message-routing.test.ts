@@ -94,16 +94,18 @@ describe("message routing", () => {
     expect(handlers.handleOpenPolicyEditor).toHaveBeenNthCalledWith(2, 3, true);
   });
 
-  it("should route cryptoPopupInit using the windowId in the message when present", () => {
+  it("should ignore the windowId in the message and use the sender windowId on cryptoPopupInit", () => {
+    // The message payload is sender-controlled; the router must trust only
+    // the browser-supplied sender.tab.windowId (matches policyEditor routes).
     dispatchRuntimeMessage(
       { type: "cryptoPopupInit", windowId: 99 },
       sender,
       handlers,
     );
-    expect(handlers.handleCryptoPopupInit).toHaveBeenCalledWith(99);
+    expect(handlers.handleCryptoPopupInit).toHaveBeenCalledWith(3);
   });
 
-  it("should fall back to sender windowId on cryptoPopupInit when not provided", () => {
+  it("should route cryptoPopupInit using the sender windowId when the message omits it", () => {
     dispatchRuntimeMessage({ type: "cryptoPopupInit" }, sender, handlers);
     expect(handlers.handleCryptoPopupInit).toHaveBeenCalledWith(3);
   });
@@ -181,11 +183,11 @@ describe("message type validation", () => {
     // (wrapped in a Promise) rather than swallowing a null.
     (handlers.handleCryptoPopupInit as any).mockReturnValue(null);
     const result = dispatchRuntimeMessage(
-      { type: "cryptoPopupInit", windowId: 4242 },
+      { type: "cryptoPopupInit" },
       sender,
       handlers,
     );
-    expect(handlers.handleCryptoPopupInit).toHaveBeenCalledWith(4242);
+    expect(handlers.handleCryptoPopupInit).toHaveBeenCalledWith(3);
     expect(result).toBeInstanceOf(Promise);
   });
 });
