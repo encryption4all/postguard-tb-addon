@@ -665,7 +665,14 @@ describe("crypto popup — error handling", () => {
       requestInitData: async () => data,
       createPg: () => ({} as any),
       runEncrypt: async () => {
-        throw new UploadSessionExpiredError("session gone");
+        // The generated message embeds the upload uuid ("Upload session
+        // 550e8400-… is no longer known …") — exactly the kind of internal
+        // detail that must not reach the UI, hence the dedicated key.
+        throw new UploadSessionExpiredError(
+          "550e8400-e29b-41d4-a716-446655440000",
+          "expired_or_unknown",
+          "",
+        );
       },
       runDecrypt: async () => undefined,
       sendError,
@@ -675,6 +682,7 @@ describe("crypto popup — error handling", () => {
       scheduleAutoClose: () => undefined,
     });
     expect(ui.error).toBe("uploadSessionExpired");
+    expect(ui.error).not.toContain("550e8400");
     expect(sendError).toHaveBeenCalledWith(4, "uploadSessionExpired");
   });
 });
