@@ -616,7 +616,7 @@ describe("crypto popup — error handling", () => {
       requestInitData: async () => data,
       createPg: () => ({} as any),
       runEncrypt: async () => {
-        throw new UploadSessionExpiredError();
+        throw new UploadSessionExpiredError("test-uuid", "expired_or_unknown", "");
       },
       runDecrypt: async () => undefined,
       sendError,
