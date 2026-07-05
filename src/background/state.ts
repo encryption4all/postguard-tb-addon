@@ -1,5 +1,6 @@
 import type { Policy, AttributeCon, Badge, CryptoPopupInitData, CryptoPopupResult } from "../lib/types";
 import { EMAIL_ATTRIBUTE_TYPE } from "../lib/utils";
+import { encryptString, decryptString, type EncryptedBlob } from "./token-crypto";
 
 export type { Policy, AttributeCon };
 
@@ -147,12 +148,32 @@ export function cleanupDecryptedMessage(msgId: number): void {
 // still query the upload session via `resumeUpload(uuid, recoveryToken)`.
 // Records are cleared on successful send (or popup error) and pruned on
 // startup against `MAX_IN_FLIGHT_AGE_MS`.
+//
+// The `recoveryToken` is a session credential and must never touch disk in
+// cleartext. The in-memory `InFlightUpload` holds the
+// plaintext token (needed to call `resumeUpload`), but the *persisted* form
+// (`PersistedInFlightUpload`) stores it AES-GCM-encrypted via `token-crypto`.
 
 export interface InFlightUpload {
   uuid: string;
   recoveryToken: string;
   /** Millisecond timestamp captured at `onUploadInit`. Used to drop
    *  records older than the Cryptify session TTL on restart. */
+  startedAt: number;
+}
+
+/** On-disk shape written to `storage.local`: the credential is encrypted,
+ *  while `uuid`/`startedAt` stay in the clear so stale records can be pruned
+ *  without a decrypt (and `uuid` alone is useless without the token). */
+interface PersistedInFlightUpload {
+  uuid: string;
+  /** Encrypted `recoveryToken`. Optional so records written by pre-fix
+   *  versions (plaintext `recoveryToken`) can still be read once on upgrade. */
+  token?: EncryptedBlob;
+  /** @deprecated Legacy plaintext token from builds before the credential was
+   *  encrypted at rest. Read once on upgrade, then re-persisted encrypted;
+   *  never written. */
+  recoveryToken?: string;
   startedAt: number;
 }
 
@@ -170,9 +191,13 @@ export async function persistInFlightUploads(): Promise<void> {
     await browser.storage.local.remove(IN_FLIGHT_KEY);
     return;
   }
-  const out: Record<string, InFlightUpload> = {};
+  const out: Record<string, PersistedInFlightUpload> = {};
   for (const [tabId, record] of inFlightUploads) {
-    out[String(tabId)] = record;
+    out[String(tabId)] = {
+      uuid: record.uuid,
+      token: await encryptString(record.recoveryToken),
+      startedAt: record.startedAt,
+    };
   }
   await browser.storage.local.set({ [IN_FLIGHT_KEY]: out });
 }
@@ -184,20 +209,44 @@ export async function persistInFlightUploads(): Promise<void> {
 export async function loadInFlightUploads(): Promise<Array<{ tabId: number; record: InFlightUpload }>> {
   try {
     const data = await browser.storage.local.get(IN_FLIGHT_KEY);
-    const saved = data[IN_FLIGHT_KEY] as Record<string, InFlightUpload> | undefined;
+    const saved = data[IN_FLIGHT_KEY] as Record<string, PersistedInFlightUpload> | undefined;
     if (!saved) return [];
     const now = Date.now();
     const fresh: Array<{ tabId: number; record: InFlightUpload }> = [];
-    for (const [tabIdStr, record] of Object.entries(saved)) {
-      if (now - record.startedAt <= MAX_IN_FLIGHT_AGE_MS) {
-        fresh.push({ tabId: Number(tabIdStr), record });
-      }
+    for (const [tabIdStr, persisted] of Object.entries(saved)) {
+      // Prune stale records before spending any crypto work on them.
+      if (now - persisted.startedAt > MAX_IN_FLIGHT_AGE_MS) continue;
+      const recoveryToken = await recoverToken(persisted);
+      if (recoveryToken == null) continue; // undecryptable / malformed — drop it
+      fresh.push({
+        tabId: Number(tabIdStr),
+        record: { uuid: persisted.uuid, recoveryToken, startedAt: persisted.startedAt },
+      });
     }
     return fresh;
   } catch (e) {
     console.warn("[PostGuard] Failed to load in-flight uploads:", e);
     return [];
   }
+}
+
+/** Recover the plaintext token from a persisted record: decrypt the encrypted
+ *  envelope, or accept a legacy plaintext token written by a pre-fix build.
+ *  Returns null if the token can't be recovered so the caller drops the
+ *  (short-lived, ≤24h) record rather than crashing the startup probe. */
+async function recoverToken(persisted: PersistedInFlightUpload): Promise<string | null> {
+  if (persisted.token) {
+    try {
+      return await decryptString(persisted.token);
+    } catch (e) {
+      console.warn("[PostGuard] Failed to decrypt in-flight upload token; dropping record:", e);
+      return null;
+    }
+  }
+  // Legacy plaintext record from before the credential was encrypted at rest:
+  // read it once so an active session survives the upgrade; the next persist
+  // re-writes it encrypted.
+  return typeof persisted.recoveryToken === "string" ? persisted.recoveryToken : null;
 }
 
 export function recordInFlightUpload(tabId: number, uuid: string, recoveryToken: string): void {

@@ -66,10 +66,36 @@ describe("in-flight upload persistence", () => {
     mod.recordInFlightUpload(1, "uuid-1", "tok-1");
     mod.recordInFlightUpload(2, "uuid-2", "tok-2");
     await mod.persistInFlightUploads();
-    const saved = store.inFlightUploads as Record<string, { uuid: string; recoveryToken: string; startedAt: number }>;
+    const saved = store.inFlightUploads as Record<
+      string,
+      { uuid: string; token: { iv: string; data: string }; startedAt: number }
+    >;
     expect(Object.keys(saved)).toEqual(expect.arrayContaining(["1", "2"]));
     expect(saved["1"].uuid).toBe("uuid-1");
-    expect(saved["2"].recoveryToken).toBe("tok-2");
+    expect(typeof saved["1"].startedAt).toBe("number");
+  });
+
+  it("persistInFlightUploads never writes the recovery token in cleartext", async () => {
+    const mod = await loadModule();
+    mod.recordInFlightUpload(1, "uuid-1", "super-secret-token");
+    await mod.persistInFlightUploads();
+    // The whole persisted payload must not contain the plaintext token,
+    // and there must be no `recoveryToken` field on disk at all.
+    const serialized = JSON.stringify(store.inFlightUploads);
+    expect(serialized).not.toContain("super-secret-token");
+    const saved = store.inFlightUploads as Record<string, Record<string, unknown>>;
+    expect(saved["1"].recoveryToken).toBeUndefined();
+    expect(saved["1"].token).toMatchObject({ iv: expect.any(String), data: expect.any(String) });
+  });
+
+  it("persist → load round-trips the encrypted token back to plaintext", async () => {
+    const mod = await loadModule();
+    mod.recordInFlightUpload(7, "uuid-7", "tok-7");
+    await mod.persistInFlightUploads();
+    const records = await mod.loadInFlightUploads();
+    expect(records).toEqual([
+      { tabId: 7, record: expect.objectContaining({ uuid: "uuid-7", recoveryToken: "tok-7" }) },
+    ]);
   });
 
   it("persistInFlightUploads removes the storage key when the map is empty", async () => {
@@ -82,7 +108,10 @@ describe("in-flight upload persistence", () => {
     expect(store.inFlightUploads).toBeUndefined();
   });
 
-  it("loadInFlightUploads returns persisted records that are within the freshness window", async () => {
+  it("loadInFlightUploads reads legacy plaintext records written by pre-fix builds", async () => {
+    // Records persisted before the credential was encrypted at rest have a
+    // cleartext `recoveryToken` and no encrypted `token`. They must still load once so
+    // an active session survives the upgrade (then get re-persisted encrypted).
     const mod = await loadModule();
     const now = Date.now();
     store.inFlightUploads = {
@@ -99,6 +128,21 @@ describe("in-flight upload persistence", () => {
     const stale = Date.now() - mod.MAX_IN_FLIGHT_AGE_MS - 1000;
     store.inFlightUploads = {
       "9": { uuid: "uuid-stale", recoveryToken: "tok-stale", startedAt: stale },
+    };
+    const records = await mod.loadInFlightUploads();
+    expect(records).toEqual([]);
+  });
+
+  it("loadInFlightUploads drops a record whose encrypted token cannot be decrypted", async () => {
+    // e.g. the keystore was cleared, or the blob was tampered with. Dropping
+    // the (short-lived) record must not crash the startup probe.
+    const mod = await loadModule();
+    store.inFlightUploads = {
+      "3": {
+        uuid: "uuid-bad",
+        token: { iv: "AAAAAAAAAAAAAAAA", data: "AAAAAAAAAAAAAAAAAAAAAA==" },
+        startedAt: Date.now() - 1000,
+      },
     };
     const records = await mod.loadInFlightUploads();
     expect(records).toEqual([]);
