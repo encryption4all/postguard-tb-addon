@@ -1,7 +1,4 @@
-
----
-
-## Agent notes (migrated from the dobby memory repo)
+# Agent notes (migrated from the dobby memory repo)
 
 ## Overview
 Thunderbird MV3 extension (manifest v3, `type: "module"`). Release: tag-triggered (`vX.Y.Z` tag pushes trigger CI to build and release the .xpi).
