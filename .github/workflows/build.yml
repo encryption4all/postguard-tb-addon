@@ -93,6 +93,9 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Run tests
+        run: npm test
+
       - name: Build extension
         run: npm run build
         env:
