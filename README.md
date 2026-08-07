@@ -2,6 +2,11 @@
 
 > For full documentation, visit [docs.postguard.eu](https://docs.postguard.eu/repos/postguard-tb-addon).
 
+> [!IMPORTANT]
+> **Development moved to [encryption4all/postguard-js](https://github.com/encryption4all/postguard-js), under `apps/tb-addon`.**
+> That repository builds and releases the add-on against the workspace copy of `@e4a/pg-js`; releases are tagged `tb-addon-v*`.
+> This repository is kept for history and is about to be archived. It no longer publishes releases.
+
 End-to-end email encryption extension for Thunderbird. Uses identity-based encryption and [Yivi](https://yivi.app) so users can send and receive encrypted email without managing keys or certificates. This is one of the main end-user products in the PostGuard system.
 
 ## Development
